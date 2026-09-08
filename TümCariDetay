@@ -1,0 +1,1562 @@
+'Attribute VB_Name = "Module_TumCariTamDetay"
+Option Explicit
+
+' =====================================================================================
+'  TÜM CARİ FATURA BAZLI DETAY RAPORU - V2 (Sütun Gizleme ve Esnek Prim Karşılaştırma Eklendi)
+'
+'  Esnek eşleştirme mantığı: müşteriden gelen prim, SADECE kampanya, SADECE ara satış,
+'  ya da İKİSİNİN TOPLAMI olarak gelebilir. Gelen Prim bloğundaki (son ~15 satır) her
+'  bir tek fatura satırı taranır; hangisi Ana Prim'e, hangisi Ara Satış Primi'ne, hangisi
+'  ikisinin toplamına denk geliyorsa o satır ve ilgili taraf yeşile boyanır. Karşılığı
+'  bulunamayan taraf (varsa) kırmızıya boyanır - "bu tutarın karşılığı gelmemiş" demek.
+' =====================================================================================
+
+Sub TumCariTumDetayRaporla_V1()
+    
+    Dim wsKamp As Worksheet, wsAra As Worksheet, wsGiderler As Worksheet, wsPrim As Worksheet, wsAyarlar As Worksheet
+    Dim wbYeni As Workbook, wsYeni As Worksheet
+    Dim makYuzde As Double
+
+    Set wsKamp = ThisWorkbook.Sheets("Kampanya")
+    Set wsAra = ThisWorkbook.Sheets("Ara_Satış")
+    Set wsGiderler = ThisWorkbook.Sheets("Giderler")
+    Set wsPrim = ThisWorkbook.Sheets("Prim")
+    Set wsAyarlar = ThisWorkbook.Sheets("Ayarlar")
+    makYuzde = wsAyarlar.Range("M2").Value
+
+    Application.ScreenUpdating = False
+
+    ' --- Benzersiz cari listesi (alfabetik) ---
+    Dim cariListesi As Collection, cariVarMi As Object
+    Set cariListesi = New Collection
+    Set cariVarMi = CreateObject("Scripting.Dictionary")
+    CariListesineEkleTCFD wsKamp, cariListesi, cariVarMi
+    CariListesineEkleTCFD wsAra, cariListesi, cariVarMi
+    CariListesineEkleTCFD wsGiderler, cariListesi, cariVarMi
+    CariListesineEkleTCFD wsPrim, cariListesi, cariVarMi
+
+    If cariListesi.Count = 0 Then
+        Application.ScreenUpdating = True
+        MsgBox "Ustam, Kampanya/Ara_Satış/Prim sayfalarında hiç cari bulunamadı.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim n As Long, k As Long, item As Variant
+    n = cariListesi.Count
+    Dim cariDizi() As String
+    ReDim cariDizi(0 To n - 1)
+    k = 0
+    For Each item In cariListesi
+        cariDizi(k) = CStr(item)
+        k = k + 1
+    Next item
+    Dim i2 As Long, j2 As Long, temp As String
+    For i2 = 0 To n - 2
+        For j2 = 0 To n - 2 - i2
+            If TurkceBuyukHarfTCFD(cariDizi(j2)) > TurkceBuyukHarfTCFD(cariDizi(j2 + 1)) Then
+                temp = cariDizi(j2): cariDizi(j2) = cariDizi(j2 + 1): cariDizi(j2 + 1) = temp
+            End If
+        Next j2
+    Next i2
+
+    ' =========================== YENİ KİTABI HAZIRLA ===========================
+    Set wbYeni = Workbooks.Add
+    Set wsYeni = wbYeni.Sheets(1)
+    wsYeni.Name = "Tum_Cari_Tam_Detay"
+
+    ' --- Ana ürün satış/gelen eski özeti için: Ayarlar!V:W beklenen eski ürün listesi
+    ' ve B2<->W2 / B3<->W3 eşleşme haritası - cari döngüsü BAŞLAMADAN ÖNCE, bir kere kurulur ---
+    Dim dBeklenenEskiUrunTCFD As Object
+    Set dBeklenenEskiUrunTCFD = CreateObject("Scripting.Dictionary")
+    Dim vSatirTCFD As Long
+    vSatirTCFD = 2
+    Do While Trim(wsAyarlar.Cells(vSatirTCFD, "V").Value) <> ""
+        dBeklenenEskiUrunTCFD(TurkceBuyukHarfTCFD(Trim(CStr(wsAyarlar.Cells(vSatirTCFD, "V").Value)))) = True
+        vSatirTCFD = vSatirTCFD + 1
+    Loop
+
+    Dim dEslesmeGrubuTCFD As Object
+    Set dEslesmeGrubuTCFD = CreateObject("Scripting.Dictionary")
+    Dim anaUrun1SatisAdi As String, anaUrun1EskiAdi As String, anaUrun2SatisAdi As String, anaUrun2EskiAdi As String
+    anaUrun1SatisAdi = Trim(CStr(wsAyarlar.Range("B2").Value))
+    anaUrun1EskiAdi = Trim(CStr(wsAyarlar.Range("W2").Value))
+    anaUrun2SatisAdi = Trim(CStr(wsAyarlar.Range("B3").Value))
+    anaUrun2EskiAdi = Trim(CStr(wsAyarlar.Range("W3").Value))
+    If anaUrun1SatisAdi <> "" Then
+        dEslesmeGrubuTCFD(TurkceBuyukHarfTCFD(anaUrun1SatisAdi)) = anaUrun1SatisAdi
+        If anaUrun1EskiAdi <> "" Then dEslesmeGrubuTCFD(TurkceBuyukHarfTCFD(anaUrun1EskiAdi)) = anaUrun1SatisAdi
+    End If
+    If anaUrun2SatisAdi <> "" Then
+        dEslesmeGrubuTCFD(TurkceBuyukHarfTCFD(anaUrun2SatisAdi)) = anaUrun2SatisAdi
+        If anaUrun2EskiAdi <> "" Then dEslesmeGrubuTCFD(TurkceBuyukHarfTCFD(anaUrun2EskiAdi)) = anaUrun2SatisAdi
+    End If
+
+    ' Ayarlar!X2 / X3 - beklenen sabit eski fiyat (ürün1 / ürün2) - Fiyat_Uyusmazlik sayfasıyla aynı kaynak
+    Dim anaBeklenenFiyat1 As Double, anaBeklenenFiyat2 As Double
+    anaBeklenenFiyat1 = SayiOkuTCFD(wsAyarlar.Range("X2").Value)
+    anaBeklenenFiyat2 = SayiOkuTCFD(wsAyarlar.Range("X3").Value)
+
+    Dim satir As Long
+    satir = 1
+
+    For k = 0 To n - 1
+        wsYeni.Cells(satir, 1).Value = cariDizi(k)
+        wsYeni.Range("A" & satir & ":P" & satir).Font.Bold = True
+        wsYeni.Range("A" & satir & ":P" & satir).Font.Size = 13
+        wsYeni.Range("A" & satir & ":P" & satir).Interior.Color = RGB(230, 230, 230)
+        satir = satir + 2
+
+        Dim kampPrim As Double, kampTutar As Double, kampSatir As Long
+        Dim araPrim As Double, araTutar As Double, araSatir As Long
+        Dim gelenPrimDeger As Double, gelenTutarDeger As Double, gelenSatir As Long
+
+        FaturaBlokKopyalaTCFD wsYeni, satir, wsKamp, cariDizi(k), "KAMPANYA", 0, makYuzde, kampPrim, kampTutar, kampSatir
+        satir = satir + 2
+        Dim giderPrimGosterme As Double, giderTutar As Double, giderSatir As Long
+        FaturaBlokKopyalaTCFD wsYeni, satir, wsGiderler, cariDizi(k), "GİDERLER (ATIK AKÜ İADESİ)", 3, makYuzde, giderPrimGosterme, giderTutar, giderSatir
+        satir = satir + 2
+        FaturaBlokKopyalaTCFD wsYeni, satir, wsAra, cariDizi(k), "ARA SATIŞ", 1, makYuzde, araPrim, araTutar, araSatir
+        satir = satir + 2
+        Dim primBlokBaslangic As Long
+        primBlokBaslangic = satir   ' Prim (Gelen) bölümü tam olarak bu satırda başlıyor - arama bunun altında kalsın
+        FaturaBlokKopyalaTCFD wsYeni, satir, wsPrim, cariDizi(k), "PRİM (GELEN)", 2, makYuzde, gelenPrimDeger, gelenTutarDeger, gelenSatir
+
+        ' --- Çapraz Kontrol ve Esnek Vurgulama ---
+        ' Müşteriden gelen prim; sadece kampanya, sadece ara satış veya ikisinin toplamı gelebilir.
+        ' --- Çapraz Kontrol ve Nokta Atışı Renklendirme (SADECE gelen prim varsa yapılabilir) ---
+        Dim kampanyaEslesti As Boolean, araSatisEslesti As Boolean
+        kampanyaEslesti = False
+        araSatisEslesti = False
+
+        If gelenSatir > 0 Then
+            Dim aramaSatiri As Long
+            Dim gelenDeger As Double
+
+            ' Müşteriden gelen prim bloğunun içindeki M kolonunu ve alt toplamlarını tara -
+            ' SADECE Prim (Gelen) bölümünün kendi sınırları içinde (yukarıdaki Kampanya/Ara
+            ' Satış satırlarına asla taşmasın diye "geriye 15 satır" yerine gerçek başlangıç).
+            For aramaSatiri = primBlokBaslangic To gelenSatir
+                If aramaSatiri > 0 Then
+                    gelenDeger = SayiOkuTCFD(wsYeni.Cells(aramaSatiri, "M").Value)
+                    If gelenDeger > 0 Then
+                        Dim buSatirEslesti As Boolean
+                        buSatirEslesti = False
+                        ' 1. Sadece Ana Prim (P) ile eşleşiyor mu?
+                        If Abs(gelenDeger - kampPrim) <= 1 And kampPrim > 0 Then
+                            wsYeni.Cells(aramaSatiri, "M").Interior.Color = RGB(198, 239, 206)
+                            kampanyaEslesti = True
+                            buSatirEslesti = True
+                        End If
+                        ' 2. Sadece Ara Satış Primi (O) ile eşleşiyor mu?
+                        If Abs(gelenDeger - araPrim) <= 1 And araPrim > 0 Then
+                            wsYeni.Cells(aramaSatiri, "M").Interior.Color = RGB(198, 239, 206)
+                            araSatisEslesti = True
+                            buSatirEslesti = True
+                        End If
+                        ' 3. İkisinin Toplamı ile eşleşiyor mu?
+                        If Abs(gelenDeger - (kampPrim + araPrim)) <= 1 And (kampPrim + araPrim) > 0 Then
+                            wsYeni.Cells(aramaSatiri, "M").Interior.Color = RGB(198, 239, 206)
+                            kampanyaEslesti = True
+                            araSatisEslesti = True
+                            buSatirEslesti = True
+                        End If
+                        ' Hiçbir şeyle eşleşmediyse - turuncu ile işaretle ki hangi tutarın
+                        ' karşılıksız kaldığı, kırmızı Ana Prim/Ara Satış ile birlikte GÖRÜLEBİLSİN.
+                        If Not buSatirEslesti Then
+                            wsYeni.Cells(aramaSatiri, "M").Interior.Color = RGB(255, 230, 153)
+                            wsYeni.Cells(aramaSatiri, "M").Font.Color = RGB(156, 87, 0)
+                        End If
+                    End If
+                End If
+            Next aramaSatiri
+
+            ' --- Eşleşenleri Yeşil, Karşılığı Gelmeyip Boşta Kalanları Kırmızı Yapma ---
+            If kampanyaEslesti And kampSatir > 0 Then
+                wsYeni.Cells(kampSatir, "P").Interior.Color = RGB(198, 239, 206)   ' Yeşil (Mutabık)
+            ElseIf kampSatir > 0 And kampPrim > 0 Then
+                wsYeni.Cells(kampSatir, "P").Interior.Color = RGB(255, 199, 206)   ' Kırmızı / Açık Ton (Karşılığı Yok)
+                wsYeni.Cells(kampSatir, "P").Font.Color = RGB(156, 0, 6)
+            End If
+
+            If araSatisEslesti And araSatir > 0 Then
+                wsYeni.Cells(araSatir, "O").Interior.Color = RGB(198, 239, 206)   ' Yeşil (Mutabık)
+            ElseIf araSatir > 0 And araPrim > 0 Then
+                wsYeni.Cells(araSatir, "O").Interior.Color = RGB(255, 199, 206)   ' Kırmızı / Açık Ton (Karşılığı Yok)
+                wsYeni.Cells(araSatir, "O").Font.Color = RGB(156, 0, 6)
+            End If
+        End If
+
+        ' --- ANA ÜRÜN SATIŞ / ATIK AKÜ ÖZETİ (Top.Hakediş'ten hemen önce) ---
+        satir = satir + 1
+        wsYeni.Cells(satir, 1).Value = "ANA ÜRÜN SATIŞ / ATIK AKÜ ÖZETİ"
+        wsYeni.Cells(satir, 1).Font.Bold = True
+        wsYeni.Cells(satir, 1).Font.Italic = True
+        satir = satir + 1
+        wsYeni.Range("A" & satir & ":F" & satir).Value = Array("Ürün", "Satış Miktarı", "Gelen Eski Miktarı", "Fark", "Gelen (Fatura) Fiyatı", "Beklenen Fiyatı")
+        wsYeni.Range("A" & satir & ":F" & satir).Font.Bold = True
+        satir = satir + 1
+
+        Dim satislarAO As Variant, satisAdetAO As Long
+        satisAdetAO = 0
+        ReDim satislarAO(1 To 2000, 1 To 6)
+        UrunSatirlariTopla wsKamp, cariDizi(k), satislarAO, satisAdetAO
+
+        Dim tumGiderlerAO As Variant, giderAdetAO As Long
+        giderAdetAO = 0
+        ReDim tumGiderlerAO(1 To 2000, 1 To 6)
+        UrunSatirlariTopla wsGiderler, cariDizi(k), tumGiderlerAO, giderAdetAO
+
+        Dim dSatisAO As Object, dGelenAO As Object, dGelenTutarAO As Object, urunSirasiAO As Collection, urunVarMiAO As Object
+        Set dSatisAO = CreateObject("Scripting.Dictionary")
+        Set dGelenAO = CreateObject("Scripting.Dictionary")
+        Set dGelenTutarAO = CreateObject("Scripting.Dictionary")
+        Set urunSirasiAO = New Collection
+        Set urunVarMiAO = CreateObject("Scripting.Dictionary")
+
+        Dim iAO As Long
+        For iAO = 1 To satisAdetAO
+            Dim gAdiAO As String
+            gAdiAO = GrupAdiBulTCFD(CStr(satislarAO(iAO, 4)), dEslesmeGrubuTCFD)
+            If Not dSatisAO.Exists(gAdiAO) Then dSatisAO(gAdiAO) = 0
+            dSatisAO(gAdiAO) = dSatisAO(gAdiAO) + CDbl(satislarAO(iAO, 5))
+            If Not urunVarMiAO.Exists(TurkceBuyukHarfTCFD(gAdiAO)) Then
+                urunVarMiAO(TurkceBuyukHarfTCFD(gAdiAO)) = True
+                urunSirasiAO.Add gAdiAO
+            End If
+        Next iAO
+        For iAO = 1 To giderAdetAO
+            If dBeklenenEskiUrunTCFD.Exists(TurkceBuyukHarfTCFD(CStr(tumGiderlerAO(iAO, 3)))) Then
+                Dim gAdiGAO As String
+                gAdiGAO = GrupAdiBulTCFD(CStr(tumGiderlerAO(iAO, 4)), dEslesmeGrubuTCFD)
+                If Not dGelenAO.Exists(gAdiGAO) Then dGelenAO(gAdiGAO) = 0
+                dGelenAO(gAdiGAO) = dGelenAO(gAdiGAO) + CDbl(tumGiderlerAO(iAO, 5))
+                If Not dGelenTutarAO.Exists(gAdiGAO) Then dGelenTutarAO(gAdiGAO) = 0
+                dGelenTutarAO(gAdiGAO) = dGelenTutarAO(gAdiGAO) + CDbl(tumGiderlerAO(iAO, 6))
+                If Not urunVarMiAO.Exists(TurkceBuyukHarfTCFD(gAdiGAO)) Then
+                    urunVarMiAO(TurkceBuyukHarfTCFD(gAdiGAO)) = True
+                    urunSirasiAO.Add gAdiGAO
+                End If
+            End If
+        Next iAO
+
+        If urunSirasiAO.Count = 0 Then
+            wsYeni.Cells(satir, 1).Value = "(kayıt yok)"
+            wsYeni.Cells(satir, 1).Font.Italic = True
+            wsYeni.Cells(satir, 1).Font.Color = RGB(150, 150, 150)
+            satir = satir + 1
+        Else
+            Dim urunAO As Variant, toplamSatisAO As Double, toplamGelenAO As Double
+            toplamSatisAO = 0: toplamGelenAO = 0
+            For Each urunAO In urunSirasiAO
+                Dim mSAO As Double, mGAO As Double, tGAO As Double
+                mSAO = 0: mGAO = 0: tGAO = 0
+                If dSatisAO.Exists(CStr(urunAO)) Then mSAO = dSatisAO(CStr(urunAO))
+                If dGelenAO.Exists(CStr(urunAO)) Then mGAO = dGelenAO(CStr(urunAO))
+                If dGelenTutarAO.Exists(CStr(urunAO)) Then tGAO = dGelenTutarAO(CStr(urunAO))
+                wsYeni.Cells(satir, 1).Value = urunAO
+                wsYeni.Cells(satir, 2).Value = mSAO
+                wsYeni.Cells(satir, 3).Value = mGAO
+                wsYeni.Cells(satir, 4).Value = mSAO - mGAO
+                wsYeni.Range("B" & satir & ":D" & satir).NumberFormat = "#,##0"
+                If mGAO <> 0 Then
+                    wsYeni.Cells(satir, 5).Value = tGAO / mGAO
+                    wsYeni.Range("E" & satir).NumberFormat = "#,##0.00"
+                End If
+                If TurkceBuyukHarfTCFD(CStr(urunAO)) = TurkceBuyukHarfTCFD(anaUrun1SatisAdi) And anaUrun1SatisAdi <> "" Then
+                    wsYeni.Cells(satir, 6).Value = anaBeklenenFiyat1
+                    wsYeni.Range("F" & satir).NumberFormat = "#,##0.00"
+                ElseIf TurkceBuyukHarfTCFD(CStr(urunAO)) = TurkceBuyukHarfTCFD(anaUrun2SatisAdi) And anaUrun2SatisAdi <> "" Then
+                    wsYeni.Cells(satir, 6).Value = anaBeklenenFiyat2
+                    wsYeni.Range("F" & satir).NumberFormat = "#,##0.00"
+                End If
+                If mSAO - mGAO > 0 Then
+                    wsYeni.Cells(satir, 4).Font.Color = RGB(156, 0, 6)
+                ElseIf mSAO - mGAO < 0 Then
+                    wsYeni.Cells(satir, 4).Font.Color = RGB(0, 97, 0)
+                End If
+                toplamSatisAO = toplamSatisAO + mSAO
+                toplamGelenAO = toplamGelenAO + mGAO
+                satir = satir + 1
+            Next urunAO
+            wsYeni.Cells(satir, 1).Value = "TOPLAM"
+            wsYeni.Cells(satir, 2).Value = toplamSatisAO
+            wsYeni.Cells(satir, 3).Value = toplamGelenAO
+            wsYeni.Cells(satir, 4).Value = toplamSatisAO - toplamGelenAO
+            wsYeni.Range("A" & satir & ":D" & satir).Font.Bold = True
+            wsYeni.Range("B" & satir & ":D" & satir).NumberFormat = "#,##0"
+            satir = satir + 1
+        End If
+
+        ' --- Top.Hakediş Primi / Fark satırı: Ana + Ara Satış Primi ile Gelen Tutar
+        ' karşılaştırılıp, eksik mi fazla mı kesilmiş net bir cümleyle özetlenir. Gelen
+        ' prim HİÇ olmasa bile (gelenSatir=0), Ana/Ara Satış primi varsa bu satır YİNE de
+        ' gösterilir - "hakediş var ama hiç kesilmemiş" demenin en net yolu budur. ---
+        If kampSatir > 0 Or araSatir > 0 Or gelenSatir > 0 Then
+            Dim topHakedisPrimi As Double, farkDeger As Double, farkMetni As String
+            topHakedisPrimi = kampPrim + araPrim
+            farkDeger = gelenTutarDeger - topHakedisPrimi
+
+            satir = satir + 1
+            wsYeni.Cells(satir, 3).Value = "Top.Hakediş Primi"
+            wsYeni.Cells(satir, 5).Value = topHakedisPrimi
+            wsYeni.Cells(satir, 6).Value = "Fark"
+            wsYeni.Cells(satir, 13).Value = farkDeger
+
+            If Abs(farkDeger) <= 1 Then
+                farkMetni = "Doğru Kesilmiş"
+                wsYeni.Range("C" & satir).Interior.Color = RGB(198, 239, 206)
+                wsYeni.Range("E" & satir).Interior.Color = RGB(198, 239, 206)
+                wsYeni.Range("F" & satir).Interior.Color = RGB(198, 239, 206)
+                wsYeni.Range("M" & satir & ":N" & satir).Interior.Color = RGB(198, 239, 206)
+            ElseIf farkDeger < 0 Then
+                farkMetni = "Eksik Kesmiş"
+                wsYeni.Cells(satir, 13).Font.Color = RGB(156, 0, 6)
+                wsYeni.Cells(satir, 14).Font.Color = RGB(156, 0, 6)
+            Else
+                farkMetni = "Fazla Kesmiş"
+                wsYeni.Cells(satir, 13).Font.Color = RGB(0, 97, 0)
+                wsYeni.Cells(satir, 14).Font.Color = RGB(0, 97, 0)
+            End If
+            wsYeni.Cells(satir, 14).Value = farkMetni
+
+            wsYeni.Range("C" & satir & ":F" & satir).Font.Bold = True
+            wsYeni.Range("M" & satir & ":N" & satir).Font.Bold = True
+            wsYeni.Range("E" & satir).NumberFormat = "#,##0.00"
+            wsYeni.Range("M" & satir).NumberFormat = "#,##0.00"
+        End If
+
+        ' Turuncu ayırıcı şerit - bir sonraki carinin başladığını görsel olarak belli eder
+        wsYeni.Range("A" & (satir + 1) & ":P" & (satir + 1)).Interior.Color = RGB(255, 165, 0)
+
+        satir = satir + 3   ' cariler arası boşluk
+    Next k
+
+    wsYeni.Columns("A:P").AutoFit
+    wsYeni.Columns("A").ColumnWidth = 41   ' A sütununu istediğin gibi sabitledik
+
+    ' --- İSTENEN SÜTUNLARI GİZLEME (D sütunu ve G-L aralığı) ---
+    wsYeni.Columns("D").EntireColumn.Hidden = True
+    wsYeni.Columns("G:L").EntireColumn.Hidden = True
+
+    Dim wsPrimOzet As Worksheet
+    Set wsPrimOzet = wbYeni.Sheets.Add(After:=wbYeni.Sheets(wbYeni.Sheets.Count))
+    wsPrimOzet.Name = "Toplam_Prim_Karsilastirma"
+    ToplamPrimOzetYaz wsPrimOzet, 1
+
+    ' --- 3. SAYFA: Satılan Kampanya Ürünü ile Gelen Eski Ürün Miktarları (Cari Bazında, Yan Yana) ---
+    Dim wsSatisIade As Worksheet
+    Set wsSatisIade = wbYeni.Sheets.Add(After:=wbYeni.Sheets(wbYeni.Sheets.Count))
+    wsSatisIade.Name = "Satis_Iade_Ozet"
+    SatisIadeOzetYaz wsSatisIade, wsKamp, wsGiderler, wsAyarlar, cariDizi, n
+
+    ' --- 4. SAYFA: Özet Hurda - düz liste (cari+ürün bazında tek satır) + ürün bazlı özet ---
+    Dim wsOzetHurda As Worksheet
+    Set wsOzetHurda = wbYeni.Sheets.Add(After:=wbYeni.Sheets(wbYeni.Sheets.Count))
+    wsOzetHurda.Name = "Ozet_Hurda"
+    OzetHurdaYaz wsOzetHurda, wsKamp, wsGiderler, wsAyarlar, cariDizi, n
+
+    ' --- 5. SAYFA: Fiyat Uyuşmazlığı - Ayarlar!X2/X3 sabit eski fiyatıyla uymayan cariler ---
+    Dim wsFiyatUyum As Worksheet
+    Set wsFiyatUyum = wbYeni.Sheets.Add(After:=wbYeni.Sheets(wbYeni.Sheets.Count))
+    wsFiyatUyum.Name = "Fiyat_Uyusmazlik"
+    FiyatUyusmazlikYaz wsFiyatUyum, wsGiderler, wsAyarlar, cariDizi, n
+
+    wsYeni.Activate
+    wsYeni.Range("A1").Select
+
+    GuvenliKaydetYeniKitap wbYeni, "Tüm Cari Fatura Detay"
+    Application.ScreenUpdating = True
+
+    MsgBox "Ustam, rapor hazır! D ve G-L sütunları gizlendi, esnek prim eşleşmeleri yeşille vurgulandı." & vbCrLf & _
+           "3. sayfada (Satis_Iade_Ozet) satılan/gelen ürün miktarları cari bazında yan yana duruyor.", _
+           vbInformation, "Tüm Cari Tam Detay Raporu"
+End Sub
+
+
+
+
+
+' =====================================================================================
+'  YARDIMCILAR (Aynı yapıda korundu)
+' =====================================================================================
+
+Private Function TurkceBuyukHarfTCFD(ByVal s As String) As String
+    TurkceBuyukHarfTCFD = UCase(Replace(Replace(s, "i", "İ"), "ı", "I"))
+End Function
+
+Private Function SayiOkuTCFD(ByVal deger As Variant) As Double
+    If IsNumeric(deger) Then
+        SayiOkuTCFD = CDbl(deger)
+    Else
+        SayiOkuTCFD = 0
+    End If
+End Function
+
+Private Function KolonHarfiTCFD(sutunNo As Long) As String
+    Dim n As Long, kalan As Long, sonuc As String
+    n = sutunNo
+    sonuc = ""
+    Do While n > 0
+        kalan = (n - 1) Mod 26
+        sonuc = Chr(65 + kalan) & sonuc
+        n = (n - kalan - 1) \ 26
+    Loop
+    KolonHarfiTCFD = sonuc
+End Function
+
+Private Sub CariListesineEkleTCFD(ws As Worksheet, ByRef liste As Collection, dVarMi As Object)
+    Dim i As Long, sonSatir As Long, ad As String
+    sonSatir = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    For i = 2 To sonSatir
+        If InStr(1, CStr(ws.Cells(i, "E").Value), "ALT TOPLAM") = 0 Then
+            ad = Trim(ws.Cells(i, "A").Value)
+            If ad <> "" Then
+                Dim anahtar As String
+                anahtar = TurkceBuyukHarfTCFD(ad)
+                If Not dVarMi.Exists(anahtar) Then
+                    dVarMi(anahtar) = True
+                    liste.Add ad
+                End If
+            End If
+        End If
+    Next i
+End Sub
+
+Private Function FaturaBlokKopyalaTCFD(wsYeni As Worksheet, ByRef satir As Long, wsKaynak As Worksheet, _
+                                        cariAra As String, bolumAdi As String, tur As Integer, _
+                                        makYuzde As Double, ByRef donenGenelPrim As Double, _
+                                        ByRef donenGenelTutar As Double, ByRef donenGenelToplamSatiri As Long) As Boolean
+    Dim i As Long, sonSatir As Long, sonSutun As Long
+    Dim eslesiyorMu As Boolean, herhangiBirKayitVarMi As Boolean
+    Dim genelMiktar As Double, genelTutar As Double, genelPrim As Double
+    Dim cariAraBuyuk As String
+    cariAraBuyuk = TurkceBuyukHarfTCFD(cariAra)
+    herhangiBirKayitVarMi = False
+    genelMiktar = 0: genelTutar = 0: genelPrim = 0
+    donenGenelPrim = 0: donenGenelTutar = 0: donenGenelToplamSatiri = 0
+
+    Select Case tur
+        Case 0: sonSutun = 16
+        Case 1: sonSutun = 15
+        Case 2: sonSutun = 14
+        Case 3: sonSutun = 14
+    End Select
+
+    wsYeni.Cells(satir, 1).Value = bolumAdi
+    wsYeni.Cells(satir, 1).Font.Bold = True
+    wsYeni.Cells(satir, 1).Font.Italic = True
+    satir = satir + 1
+
+    Dim basliklar As Variant
+    Select Case tur
+        Case 0
+            basliklar = Array("Cari İsim", "Tarih", "Fiş/FaturaNo", "Stok Kodu", "Stok Adı", "Miktar", _
+                "Brüt Fiyat", "Net Fiyat", "Brüt Satış Tutarı", "İskonto Tutarı", "İskonto Döviz Tutarı", _
+                "KDV Tutarı", "Tutar", "Proje Kodu", "Destek Prm. Fiyatı", "Destek Prm. Primi")
+        Case 1
+            basliklar = Array("Cari İsim", "Tarih", "Fiş/FaturaNo", "Stok Kodu", "Stok Adı", "Miktar", _
+                "Brüt Fiyat", "Net Fiyat", "Brüt Satış Tutarı", "İskonto Tutarı", "İskonto Döviz Tutarı", _
+                "KDV Tutarı", "Tutar", "Proje Kodu", "Ara Satış Primi")
+        Case 2, 3
+            basliklar = Array("Cari İsim", "Tarih", "Fiş/FaturaNo", "Stok Kodu", "Stok Adı", "Miktar", _
+                "Brüt Fiyat", "Net Fiyat", "Brüt Satış Tutarı", "İskonto Tutarı", "İskonto Döviz Tutarı", _
+                "KDV Tutarı", "Tutar", "Proje Kodu")
+    End Select
+    wsYeni.Range(wsYeni.Cells(satir, 1), wsYeni.Cells(satir, sonSutun)).Value = basliklar
+    wsYeni.Range("A" & satir & ":" & KolonHarfiTCFD(sonSutun) & satir).Font.Bold = True
+    wsYeni.Range("A" & satir & ":" & KolonHarfiTCFD(sonSutun) & satir).Interior.Color = RGB(230, 230, 230)
+    satir = satir + 1
+
+    eslesiyorMu = False
+    sonSatir = wsKaynak.Cells(wsKaynak.Rows.Count, "E").End(xlUp).Row
+    Dim blokTesvikPrimi As Double
+    blokTesvikPrimi = 0
+
+    For i = 2 To sonSatir
+        Dim altToplamMi As Boolean, satirCari As String
+        altToplamMi = (InStr(1, CStr(wsKaynak.Cells(i, "E").Value), "ALT TOPLAM") > 0)
+        satirCari = Trim(CStr(wsKaynak.Cells(i, "A").Value))
+
+        If Not altToplamMi Then
+            eslesiyorMu = (TurkceBuyukHarfTCFD(satirCari) = cariAraBuyuk)
+        End If
+
+        If eslesiyorMu Then
+            herhangiBirKayitVarMi = True
+            Dim j As Long
+            For j = 1 To 14
+                wsYeni.Cells(satir, j).Value = wsKaynak.Cells(i, j).Value
+            Next j
+            If tur = 0 Then
+                wsYeni.Cells(satir, 15).Value = wsKaynak.Cells(i, "O").Value
+                If altToplamMi Then
+                    wsYeni.Cells(satir, 16).Value = blokTesvikPrimi
+                    blokTesvikPrimi = 0
+                Else
+                    wsYeni.Cells(satir, 16).Value = wsKaynak.Cells(i, "P").Value
+                    blokTesvikPrimi = blokTesvikPrimi + SayiOkuTCFD(wsKaynak.Cells(i, "P").Value)
+                End If
+            ElseIf tur = 1 Then
+                Dim araSatisPrimi As Double
+                araSatisPrimi = SayiOkuTCFD(wsKaynak.Cells(i, "M").Value) * makYuzde / 100
+                wsYeni.Cells(satir, 15).Value = araSatisPrimi
+            End If
+
+            If IsDate(wsYeni.Cells(satir, 2).Value) Then wsYeni.Cells(satir, 2).NumberFormat = "m/d/yyyy"
+            wsYeni.Range("F" & satir).NumberFormat = "#,##0"
+            wsYeni.Range("G" & satir & ":M" & satir).NumberFormat = "#,##0.00"
+            If sonSutun >= 15 Then wsYeni.Range("O" & satir).NumberFormat = "#,##0.00"
+            If sonSutun >= 16 Then wsYeni.Range("P" & satir).NumberFormat = "#,##0.00"
+
+            If altToplamMi Then
+                wsYeni.Range("A" & satir & ":" & KolonHarfiTCFD(sonSutun) & satir).Font.Bold = True
+                wsYeni.Range("A" & satir & ":" & KolonHarfiTCFD(sonSutun) & satir).Borders(xlEdgeBottom).LineStyle = xlContinuous
+                genelMiktar = genelMiktar + SayiOkuTCFD(wsYeni.Cells(satir, 6).Value)
+                genelTutar = genelTutar + SayiOkuTCFD(wsYeni.Cells(satir, 13).Value)
+                If tur = 0 Then
+                    genelPrim = genelPrim + SayiOkuTCFD(wsYeni.Cells(satir, 16).Value)
+                ElseIf tur = 1 Then
+                    genelPrim = genelPrim + SayiOkuTCFD(wsYeni.Cells(satir, 15).Value)
+                End If
+            End If
+            satir = satir + 1
+        End If
+    Next i
+
+    If herhangiBirKayitVarMi Then
+        wsYeni.Cells(satir, 5).Value = bolumAdi & " GENEL TOPLAM"
+        wsYeni.Cells(satir, 6).Value = genelMiktar
+        wsYeni.Cells(satir, 13).Value = genelTutar
+        If tur = 0 Then
+            wsYeni.Cells(satir, 16).Value = genelPrim
+        ElseIf tur = 1 Then
+            wsYeni.Cells(satir, 15).Value = genelPrim
+        End If
+        wsYeni.Range("A" & satir & ":" & KolonHarfiTCFD(sonSutun) & satir).Font.Bold = True
+        wsYeni.Range("F" & satir).NumberFormat = "#,##0"
+        wsYeni.Range("G" & satir & ":M" & satir).NumberFormat = "#,##0.00"
+        If sonSutun >= 15 Then wsYeni.Range("O" & satir).NumberFormat = "#,##0.00"
+        If sonSutun >= 16 Then wsYeni.Range("P" & satir).NumberFormat = "#,##0.00"
+        wsYeni.Range("A" & satir & ":" & KolonHarfiTCFD(sonSutun) & satir).Borders(xlEdgeTop).LineStyle = xlContinuous
+
+        donenGenelPrim = genelPrim
+        donenGenelTutar = genelTutar
+        donenGenelToplamSatiri = satir
+
+        satir = satir + 1
+    Else
+        wsYeni.Cells(satir, 1).Value = "(bu cariye ait " & bolumAdi & " kaydı yok)"
+        wsYeni.Cells(satir, 1).Font.Italic = True
+        wsYeni.Cells(satir, 1).Font.Color = RGB(150, 150, 150)
+        satir = satir + 1
+    End If
+
+    FaturaBlokKopyalaTCFD = herhangiBirKayitVarMi
+End Function
+
+
+
+
+' =====================================================================================
+'  SATIŞ / İADE ÖZETİ - Cari bazında, ÜÇ AYRI BLOK:
+'    1) SATIŞ (Kampanya)
+'    2) ATIK AKÜ - KAYITLI (Giderler'de, Ayarlar!V:W listesindeki stok koduyla eşleşen)
+'    3) ATIK AKÜ - UYMAYAN (Giderler'de, o listede OLMAYAN - beklenmedik/farklı giriş)
+'
+'  Ayarlar sayfasında V1/W1 başlık, V2'den itibaren aşağı doğru: V=Stok Kodu, W=Stok Adı
+'  - kaç satır olursa olsun (boş satıra kadar) okunur, "beklenen eski ürün" listesidir.
+'
+'  NOT: Özel bir veri tipi (Type) KULLANILMIYOR - bazı Excel/VBA kurulumlarında Type
+'  tanımlarıyla ilgili "user-defined type not defined" sorunu çıkabildiği görüldüğü için,
+'  her satır 2 boyutlu bir Variant dizisinde tutuluyor (sütun 1=Tarih, 2=FişNo,
+'  3=StokKodu, 4=StokAdı, 5=Miktar). Aynı iş, daha basit bir yapıyla yapılıyor.
+' =====================================================================================
+Private Sub SatisIadeOzetYaz(wsHedef As Worksheet, wsKamp As Worksheet, wsGiderler As Worksheet, _
+                              wsAyarlar As Worksheet, cariDizi() As String, n As Long)
+    ' --- Ayarlar!V:W'den beklenen eski ürün stok kodu listesini oku ---
+    Dim dBeklenenEskiUrun As Object
+    Set dBeklenenEskiUrun = CreateObject("Scripting.Dictionary")
+    Dim vSatir As Long
+    vSatir = 2
+    Do While Trim(wsAyarlar.Cells(vSatir, "V").Value) <> ""
+        Dim beklenenKod As String
+        beklenenKod = TurkceBuyukHarfTCFD(Trim(CStr(wsAyarlar.Cells(vSatir, "V").Value)))
+        dBeklenenEskiUrun(beklenenKod) = True
+        vSatir = vSatir + 1
+    Loop
+
+    wsHedef.Range("A1").Value = "SATIŞ / İADE ÖZETİ"
+    wsHedef.Range("A1").Font.Bold = True
+    wsHedef.Range("A1").Font.Size = 13
+
+    Dim satir As Long, k As Long
+    satir = 3
+
+    For k = 0 To n - 1
+        wsHedef.Cells(satir, 1).Value = cariDizi(k)
+        wsHedef.Range("A" & satir & ":F" & satir).Font.Bold = True
+        wsHedef.Range("A" & satir & ":F" & satir).Font.Size = 12
+        wsHedef.Range("A" & satir & ":F" & satir).Interior.Color = RGB(230, 230, 230)
+        satir = satir + 1
+
+        Dim satislar As Variant, satisAdet As Long
+        satisAdet = 0
+        ReDim satislar(1 To 2000, 1 To 6)
+        UrunSatirlariTopla wsKamp, cariDizi(k), satislar, satisAdet
+
+        Dim tumGiderler As Variant, giderAdet As Long
+        giderAdet = 0
+        ReDim tumGiderler(1 To 2000, 1 To 6)
+        UrunSatirlariTopla wsGiderler, cariDizi(k), tumGiderler, giderAdet
+
+        ' Giderler'i ikiye ayır: kayıtlı (Ayarlar listesinde) / uymayan (listede yok)
+        Dim kayitli As Variant, kayitliAdet As Long
+        Dim uymayan As Variant, uymayanAdet As Long
+        kayitliAdet = 0: uymayanAdet = 0
+        ReDim kayitli(1 To giderAdet + 1, 1 To 6)
+        ReDim uymayan(1 To giderAdet + 1, 1 To 6)
+        Dim g As Long, sutun As Long
+        For g = 1 To giderAdet
+            If dBeklenenEskiUrun.Exists(TurkceBuyukHarfTCFD(CStr(tumGiderler(g, 3)))) Then
+                kayitliAdet = kayitliAdet + 1
+                For sutun = 1 To 6
+                    kayitli(kayitliAdet, sutun) = tumGiderler(g, sutun)
+                Next sutun
+            Else
+                uymayanAdet = uymayanAdet + 1
+                For sutun = 1 To 6
+                    uymayan(uymayanAdet, sutun) = tumGiderler(g, sutun)
+                Next sutun
+            End If
+        Next g
+
+        satir = SatisKayitliKarsilastirYaz(wsHedef, satir, satislar, satisAdet, kayitli, kayitliAdet, wsAyarlar)
+        satir = BlokYazSIO(wsHedef, satir, "ATIK AKÜ - UYMAYAN (kontrol et)", uymayan, uymayanAdet, RGB(255, 199, 206))
+
+        satir = satir + 1   ' cariler arası boşluk
+    Next k
+
+    wsHedef.Columns("A:N").AutoFit
+    wsHedef.Range("A1").Select
+End Sub
+
+' SATIŞ ve KAYITLI (eski ürün) satırlarını ÜRÜN ADINA göre gruplar, aynı ürünün satış
+' satırlarını sol tarafa, gelen satırlarını sağ tarafa hizalar, her satırda Fark (satış-
+' gelen) hesaplar, her ürün grubunun sonunda ALT TOPLAM satırı yazar.
+' Sütunlar: A Tarih(satış) B Fiş/FaturaNo(satış) C Ürün(satış) D Miktar(satış)
+'           E (boşluk) F Tarih(gelen) G Fiş/FaturaNo(gelen) H Ürün(gelen) I Miktar(gelen) J Fark
+'
+' Sütunlar: A Tarih(satış) B Fiş/FaturaNo(satış) C Ürün(satış) D Miktar(satış) E Tutar(satış)
+'           F Birim Fiyat(satış)  G (boşluk)  H Tarih(gelen) I Fiş/FaturaNo(gelen) J Ürün(gelen)
+'           K Miktar(gelen) L Tutar(gelen) M Birim Fiyat(gelen)  N Fark (miktar)
+'
+' GRUPLAMA: Ayarlar!B2 (1. ürün satış ismi) ile Ayarlar!W2 (1. ürünün eski/gelen ismi)
+' AYNI ÜRÜN sayılır - isimler birebir farklı yazılsa bile. Aynı şekilde B3 ile W3.
+' Bu eşleşmede olmayan ürünler eskisi gibi kendi (ham) ismine göre gruplanır.
+Private Function SatisKayitliKarsilastirYaz(wsHedef As Worksheet, ByVal satir As Long, _
+                                             satislar As Variant, satisAdet As Long, _
+                                             kayitli As Variant, kayitliAdet As Long, _
+                                             wsAyarlar As Worksheet) As Long
+    wsHedef.Cells(satir, 1).Value = "SATIŞ (Kampanya)"
+    wsHedef.Cells(satir, 8).Value = "ATIK AKÜ - KAYITLI"
+    wsHedef.Range("A" & satir & ":F" & satir).Font.Bold = True
+    wsHedef.Range("H" & satir & ":N" & satir).Font.Bold = True
+    wsHedef.Range("A" & satir & ":F" & satir).Interior.Color = RGB(222, 235, 247)
+    wsHedef.Range("H" & satir & ":N" & satir).Interior.Color = RGB(198, 239, 206)
+    satir = satir + 1
+
+    wsHedef.Range("A" & satir & ":F" & satir).Value = Array("Tarih", "Fiş/FaturaNo", "Ürün", "Miktar", "Tutar", "Birim Fiyat")
+    wsHedef.Range("H" & satir & ":N" & satir).Value = Array("Tarih", "Fiş/FaturaNo", "Ürün", "Miktar", "Tutar", "Birim Fiyat", "Fark (Miktar)")
+    wsHedef.Range("A" & satir & ":F" & satir).Font.Bold = True
+    wsHedef.Range("H" & satir & ":N" & satir).Font.Bold = True
+    satir = satir + 1
+
+    ' --- Ayarlar!B2<->W2 ve B3<->W3 eşleşme haritasını kur - isim farklı olsa bile
+    ' aynı ürün sayılsınlar diye. Grup adı olarak SATIŞ ismi (B2/B3) esas alınır. ---
+    Dim dEslesmeGrubu As Object
+    Set dEslesmeGrubu = CreateObject("Scripting.Dictionary")
+    Dim urun1SatisAdi As String, urun1EskiAdi As String
+    Dim urun2SatisAdi As String, urun2EskiAdi As String
+    urun1SatisAdi = Trim(CStr(wsAyarlar.Range("B2").Value))
+    urun1EskiAdi = Trim(CStr(wsAyarlar.Range("W2").Value))
+    urun2SatisAdi = Trim(CStr(wsAyarlar.Range("B3").Value))
+    urun2EskiAdi = Trim(CStr(wsAyarlar.Range("W3").Value))
+
+    If urun1SatisAdi <> "" Then
+        dEslesmeGrubu(TurkceBuyukHarfTCFD(urun1SatisAdi)) = urun1SatisAdi
+        If urun1EskiAdi <> "" Then dEslesmeGrubu(TurkceBuyukHarfTCFD(urun1EskiAdi)) = urun1SatisAdi
+    End If
+    If urun2SatisAdi <> "" Then
+        dEslesmeGrubu(TurkceBuyukHarfTCFD(urun2SatisAdi)) = urun2SatisAdi
+        If urun2EskiAdi <> "" Then dEslesmeGrubu(TurkceBuyukHarfTCFD(urun2EskiAdi)) = urun2SatisAdi
+    End If
+
+    ' --- Ürün adlarını, SATIŞ sırasına göre (önce satıştakiler, sonra sadece gelende
+    ' olan varsa onlar) benzersiz listele - eşleşme haritasından geçirerek ---
+    Dim urunSirasi As Collection, urunVarMi As Object
+    Set urunSirasi = New Collection
+    Set urunVarMi = CreateObject("Scripting.Dictionary")
+    Dim i As Long
+    For i = 1 To satisAdet
+        Dim uAdiS As String
+        uAdiS = GrupAdiBulTCFD(CStr(satislar(i, 4)), dEslesmeGrubu)
+        If Not urunVarMi.Exists(TurkceBuyukHarfTCFD(uAdiS)) Then
+            urunVarMi(TurkceBuyukHarfTCFD(uAdiS)) = True
+            urunSirasi.Add uAdiS
+        End If
+    Next i
+    For i = 1 To kayitliAdet
+        Dim uAdiK As String
+        uAdiK = GrupAdiBulTCFD(CStr(kayitli(i, 4)), dEslesmeGrubu)
+        If Not urunVarMi.Exists(TurkceBuyukHarfTCFD(uAdiK)) Then
+            urunVarMi(TurkceBuyukHarfTCFD(uAdiK)) = True
+            urunSirasi.Add uAdiK
+        End If
+    Next i
+
+    If urunSirasi.Count = 0 Then
+        wsHedef.Cells(satir, 1).Value = "(kayıt yok)"
+        wsHedef.Cells(satir, 1).Font.Italic = True
+        wsHedef.Cells(satir, 1).Font.Color = RGB(150, 150, 150)
+        satir = satir + 2
+        SatisKayitliKarsilastirYaz = satir
+        Exit Function
+    End If
+
+    Dim urun As Variant
+    For Each urun In urunSirasi
+        Dim urunAdiBuyuk As String
+        urunAdiBuyuk = TurkceBuyukHarfTCFD(CStr(urun))
+
+        ' Bu ürüne ait satış satırlarını ve gelen satırlarını ayrı ayrı topla (harita üzerinden)
+        Dim satisIdx() As Long, satisSayisi As Long
+        ReDim satisIdx(1 To satisAdet + 1)
+        satisSayisi = 0
+        For i = 1 To satisAdet
+            If TurkceBuyukHarfTCFD(GrupAdiBulTCFD(CStr(satislar(i, 4)), dEslesmeGrubu)) = urunAdiBuyuk Then
+                satisSayisi = satisSayisi + 1
+                satisIdx(satisSayisi) = i
+            End If
+        Next i
+
+        Dim kayitliIdx() As Long, kayitliSayisi As Long
+        ReDim kayitliIdx(1 To kayitliAdet + 1)
+        kayitliSayisi = 0
+        For i = 1 To kayitliAdet
+            If TurkceBuyukHarfTCFD(GrupAdiBulTCFD(CStr(kayitli(i, 4)), dEslesmeGrubu)) = urunAdiBuyuk Then
+                kayitliSayisi = kayitliSayisi + 1
+                kayitliIdx(kayitliSayisi) = i
+            End If
+        Next i
+
+        Dim maxSayi As Long
+        maxSayi = satisSayisi
+        If kayitliSayisi > maxSayi Then maxSayi = kayitliSayisi
+
+        Dim toplamSatisM As Double, toplamGelenM As Double
+        Dim toplamSatisT As Double, toplamGelenT As Double
+        toplamSatisM = 0: toplamGelenM = 0: toplamSatisT = 0: toplamGelenT = 0
+
+        Dim r As Long
+        For r = 1 To maxSayi
+            Dim satisM As Double, gelenM As Double, satisT As Double, gelenT As Double
+            satisM = 0: gelenM = 0: satisT = 0: gelenT = 0
+            If r <= satisSayisi Then
+                Dim si As Long
+                si = satisIdx(r)
+                wsHedef.Cells(satir, 1).Value = satislar(si, 1)
+                wsHedef.Cells(satir, 1).NumberFormat = "m/d/yyyy"
+                wsHedef.Cells(satir, 2).Value = satislar(si, 2)
+                wsHedef.Cells(satir, 3).Value = satislar(si, 4)
+                satisM = CDbl(satislar(si, 5))
+                satisT = CDbl(satislar(si, 6))
+                wsHedef.Cells(satir, 4).Value = satisM
+                wsHedef.Cells(satir, 5).Value = satisT
+                wsHedef.Range("D" & satir).NumberFormat = "#,##0"
+                wsHedef.Range("E" & satir).NumberFormat = "#,##0.00"
+                If satisM <> 0 Then
+                    wsHedef.Cells(satir, 6).Value = satisT / satisM
+                    wsHedef.Range("F" & satir).NumberFormat = "#,##0.00"
+                End If
+            End If
+            If r <= kayitliSayisi Then
+                Dim ki As Long
+                ki = kayitliIdx(r)
+                wsHedef.Cells(satir, 8).Value = kayitli(ki, 1)
+                wsHedef.Cells(satir, 8).NumberFormat = "m/d/yyyy"
+                wsHedef.Cells(satir, 9).Value = kayitli(ki, 2)
+                wsHedef.Cells(satir, 10).Value = kayitli(ki, 4)
+                gelenM = CDbl(kayitli(ki, 5))
+                gelenT = CDbl(kayitli(ki, 6))
+                wsHedef.Cells(satir, 11).Value = gelenM
+                wsHedef.Cells(satir, 12).Value = gelenT
+                wsHedef.Range("K" & satir).NumberFormat = "#,##0"
+                wsHedef.Range("L" & satir).NumberFormat = "#,##0.00"
+                If gelenM <> 0 Then
+                    wsHedef.Cells(satir, 13).Value = gelenT / gelenM
+                    wsHedef.Range("M" & satir).NumberFormat = "#,##0.00"
+                End If
+            End If
+            wsHedef.Cells(satir, 14).Value = satisM - gelenM
+            wsHedef.Range("N" & satir).NumberFormat = "#,##0"
+            If satisM - gelenM <> 0 Then wsHedef.Cells(satir, 14).Font.Color = RGB(200, 0, 0)
+
+            toplamSatisM = toplamSatisM + satisM
+            toplamGelenM = toplamGelenM + gelenM
+            toplamSatisT = toplamSatisT + satisT
+            toplamGelenT = toplamGelenT + gelenT
+            satir = satir + 1
+        Next r
+
+        ' Bu ürünün ALT TOPLAM satırı
+        wsHedef.Cells(satir, 3).Value = "ALT TOPLAM"
+        wsHedef.Cells(satir, 4).Value = toplamSatisM
+        wsHedef.Cells(satir, 5).Value = toplamSatisT
+        If toplamSatisM <> 0 Then wsHedef.Cells(satir, 6).Value = toplamSatisT / toplamSatisM
+        wsHedef.Cells(satir, 11).Value = toplamGelenM
+        wsHedef.Cells(satir, 12).Value = toplamGelenT
+        If toplamGelenM <> 0 Then wsHedef.Cells(satir, 13).Value = toplamGelenT / toplamGelenM
+        wsHedef.Cells(satir, 14).Value = toplamSatisM - toplamGelenM
+        wsHedef.Range("A" & satir & ":N" & satir).Font.Bold = True
+        wsHedef.Range("D" & satir).NumberFormat = "#,##0"
+        wsHedef.Range("E" & satir & ":F" & satir).NumberFormat = "#,##0.00"
+        wsHedef.Range("K" & satir).NumberFormat = "#,##0"
+        wsHedef.Range("L" & satir & ":M" & satir).NumberFormat = "#,##0.00"
+        wsHedef.Range("N" & satir).NumberFormat = "#,##0"
+        wsHedef.Range("A" & satir & ":N" & satir).Borders(xlEdgeBottom).LineStyle = xlContinuous
+        satir = satir + 2   ' ürünler arası boşluk
+    Next urun
+
+    SatisKayitliKarsilastirYaz = satir
+End Function
+
+' Bir alt bloğu (başlık + satırlar) yazar, bir sonraki boş satırı döner.
+' satirlar: 2 boyutlu dizi - sütun 1=Tarih, 2=FişNo, 3=StokKodu, 4=StokAdı, 5=Miktar
+Private Function BlokYazSIO(wsHedef As Worksheet, ByVal satir As Long, baslik As String, _
+                             satirlar As Variant, adet As Long, renk As Long) As Long
+    wsHedef.Cells(satir, 1).Value = baslik
+    wsHedef.Cells(satir, 1).Font.Bold = True
+    wsHedef.Range("A" & satir & ":F" & satir).Interior.Color = renk
+    satir = satir + 1
+
+    If adet = 0 Then
+        wsHedef.Cells(satir, 1).Value = "(kayıt yok)"
+        wsHedef.Cells(satir, 1).Font.Italic = True
+        wsHedef.Cells(satir, 1).Font.Color = RGB(150, 150, 150)
+        satir = satir + 1
+    Else
+        wsHedef.Range("A" & satir & ":F" & satir).Value = Array("Tarih", "Fiş/FaturaNo", "Ürün", "Miktar", "Tutar", "Birim Fiyat")
+        wsHedef.Range("A" & satir & ":F" & satir).Font.Bold = True
+        satir = satir + 1
+        Dim r As Long
+        For r = 1 To adet
+            wsHedef.Cells(satir, 1).Value = satirlar(r, 1)
+            wsHedef.Cells(satir, 1).NumberFormat = "m/d/yyyy"
+            wsHedef.Cells(satir, 2).Value = satirlar(r, 2)
+            wsHedef.Cells(satir, 3).Value = satirlar(r, 4)
+            wsHedef.Cells(satir, 4).Value = satirlar(r, 5)
+            wsHedef.Cells(satir, 5).Value = satirlar(r, 6)
+            wsHedef.Range("D" & satir).NumberFormat = "#,##0"
+            wsHedef.Range("E" & satir).NumberFormat = "#,##0.00"
+            If CDbl(satirlar(r, 5)) <> 0 Then
+                wsHedef.Cells(satir, 6).Value = CDbl(satirlar(r, 6)) / CDbl(satirlar(r, 5))
+                wsHedef.Range("F" & satir).NumberFormat = "#,##0.00"
+            End If
+            satir = satir + 1
+        Next r
+    End If
+
+    BlokYazSIO = satir + 1   ' bloklar arası küçük boşluk
+End Function
+
+' Bir sayfada (Kampanya/Giderler) o cariye ait TÜM satırları (toplanmadan, her biri
+' kendi Tarih/Fiş No'suyla) 2 boyutlu diziye ekler.
+' hedef sütunları: 1=Tarih, 2=FişNo, 3=StokKodu, 4=StokAdı, 5=Miktar
+Private Sub UrunSatirlariTopla(ws As Worksheet, cariAra As String, ByRef hedef As Variant, ByRef adet As Long)
+    Dim i As Long, sonSatir As Long
+    Dim cariBuyuk As String
+    cariBuyuk = TurkceBuyukHarfTCFD(cariAra)
+    sonSatir = ws.Cells(ws.Rows.Count, "E").End(xlUp).Row
+
+    For i = 2 To sonSatir
+        If InStr(1, CStr(ws.Cells(i, "E").Value), "ALT TOPLAM") = 0 Then
+            If TurkceBuyukHarfTCFD(Trim(CStr(ws.Cells(i, "A").Value))) = cariBuyuk Then
+                Dim stokAdi As String
+                stokAdi = Trim(CStr(ws.Cells(i, "E").Value))
+                If stokAdi <> "" And IsDate(ws.Cells(i, "B").Value) Then
+                    adet = adet + 1
+                    hedef(adet, 1) = ws.Cells(i, "B").Value
+                    hedef(adet, 2) = CStr(ws.Cells(i, "C").Value)
+                    hedef(adet, 3) = Trim(CStr(ws.Cells(i, "D").Value))
+                    hedef(adet, 4) = stokAdi
+                    hedef(adet, 5) = SayiOkuTCFD(ws.Cells(i, "F").Value)
+                    hedef(adet, 6) = SayiOkuTCFD(ws.Cells(i, "M").Value)
+                End If
+            End If
+        End If
+    Next i
+End Sub
+
+' Bir stok adının hangi ürün grubuna ait olduğunu bulur - eşleşme haritasında varsa
+' (Ayarlar B2/W2, B3/W3) grubun SATIŞ ismini döner, yoksa kendi ham ismini olduğu gibi
+' döner (harita dışındaki ürünler için değişiklik yok, eskisi gibi kendi ismiyle gruplanır).
+Private Function GrupAdiBulTCFD(hamAd As String, dEslesmeGrubu As Object) As String
+    Dim anahtar As String
+    anahtar = TurkceBuyukHarfTCFD(Trim(hamAd))
+    If dEslesmeGrubu.Exists(anahtar) Then
+        GrupAdiBulTCFD = dEslesmeGrubu(anahtar)
+    Else
+        GrupAdiBulTCFD = hamAd
+    End If
+End Function
+
+' =====================================================================================
+'  ÖZET HURDA - V1
+'
+'  DÜZ (blok olmadan, cariler arası boşluksuz) tek tablo: her (Cari + Ürün) kombinasyonu
+'  için TEK satır - satış miktarı, gelen eski ürün miktarı, Fark (satış-gelen).
+'  Ürün eşleştirmesi Satis_Iade_Ozet ile AYNI haritayı (Ayarlar!B2<->W2, B3<->W3) kullanır.
+'
+'  Altında ayrıca "ÖZET" mini tablosu: TÜM carilerin farkı, SADECE ürün bazında toplanmış.
+'
+'  FARK + ise gelmeyen (bize hâlâ eski ürün borçlu), FARK - ise fazla gelen demektir.
+' =====================================================================================
+Private Sub OzetHurdaYaz(wsHedef As Worksheet, wsKamp As Worksheet, wsGiderler As Worksheet, _
+                          wsAyarlar As Worksheet, cariDizi() As String, n As Long)
+    ' --- Ayarlar!V:W'den beklenen eski ürün stok kodu listesini oku ---
+    Dim dBeklenenEskiUrun As Object
+    Set dBeklenenEskiUrun = CreateObject("Scripting.Dictionary")
+    Dim vSatir As Long
+    vSatir = 2
+    Do While Trim(wsAyarlar.Cells(vSatir, "V").Value) <> ""
+        dBeklenenEskiUrun(TurkceBuyukHarfTCFD(Trim(CStr(wsAyarlar.Cells(vSatir, "V").Value)))) = True
+        vSatir = vSatir + 1
+    Loop
+
+    ' --- Ayarlar!B2<->W2 ve B3<->W3 eşleşme haritası (Satis_Iade_Ozet ile aynı) ---
+    Dim dEslesmeGrubu As Object
+    Set dEslesmeGrubu = CreateObject("Scripting.Dictionary")
+    Dim urun1SatisAdi As String, urun1EskiAdi As String, urun2SatisAdi As String, urun2EskiAdi As String
+    urun1SatisAdi = Trim(CStr(wsAyarlar.Range("B2").Value))
+    urun1EskiAdi = Trim(CStr(wsAyarlar.Range("W2").Value))
+    urun2SatisAdi = Trim(CStr(wsAyarlar.Range("B3").Value))
+    urun2EskiAdi = Trim(CStr(wsAyarlar.Range("W3").Value))
+    If urun1SatisAdi <> "" Then
+        dEslesmeGrubu(TurkceBuyukHarfTCFD(urun1SatisAdi)) = urun1SatisAdi
+        If urun1EskiAdi <> "" Then dEslesmeGrubu(TurkceBuyukHarfTCFD(urun1EskiAdi)) = urun1SatisAdi
+    End If
+    If urun2SatisAdi <> "" Then
+        dEslesmeGrubu(TurkceBuyukHarfTCFD(urun2SatisAdi)) = urun2SatisAdi
+        If urun2EskiAdi <> "" Then dEslesmeGrubu(TurkceBuyukHarfTCFD(urun2EskiAdi)) = urun2SatisAdi
+    End If
+
+    wsHedef.Range("A1").Value = "ÖZET HURDA"
+    wsHedef.Range("A1").Font.Bold = True
+    wsHedef.Range("A1").Font.Size = 13
+
+    wsHedef.Range("A2:D2").Value = Array("Cari İsim", "SATIŞ", "Ürün", "Miktar")
+    wsHedef.Range("F2:J2").Value = Array("Cari İsim", "GİDER", "Ürün", "Miktar", "FARK")
+    wsHedef.Range("A2:D2").Font.Bold = True
+    wsHedef.Range("F2:J2").Font.Bold = True
+    wsHedef.Range("A2:D2").Interior.Color = RGB(255, 0, 0)
+    wsHedef.Range("A2:D2").Font.Color = RGB(255, 255, 255)
+    wsHedef.Range("F2:J2").Interior.Color = RGB(0, 0, 255)
+    wsHedef.Range("F2:J2").Font.Color = RGB(255, 255, 255)
+
+    Dim satir As Long, k As Long
+    satir = 3
+
+    ' Ürün bazlı GENEL (tüm cariler) fark toplamı için
+    Dim dUrunGenelFark As Object, urunGenelSirasi As Collection, urunGenelVarMi As Object
+    Set dUrunGenelFark = CreateObject("Scripting.Dictionary")
+    Set urunGenelSirasi = New Collection
+    Set urunGenelVarMi = CreateObject("Scripting.Dictionary")
+
+    Dim genelSatisM As Double, genelGelenM As Double, genelFark As Double
+    genelSatisM = 0: genelGelenM = 0: genelFark = 0
+
+    For k = 0 To n - 1
+        Dim satislar As Variant, satisAdet As Long
+        satisAdet = 0
+        ReDim satislar(1 To 2000, 1 To 6)
+        UrunSatirlariTopla wsKamp, cariDizi(k), satislar, satisAdet
+
+        Dim tumGiderler As Variant, giderAdet As Long
+        giderAdet = 0
+        ReDim tumGiderler(1 To 2000, 1 To 6)
+        UrunSatirlariTopla wsGiderler, cariDizi(k), tumGiderler, giderAdet
+
+        ' Sadece KAYITLI olanları al (uymayanlar bu sayfada hiç yer almaz)
+        Dim dSatisUrunM As Object, dGelenUrunM As Object
+        Dim urunSirasi As Collection, urunVarMi As Object
+        Set dSatisUrunM = CreateObject("Scripting.Dictionary")
+        Set dGelenUrunM = CreateObject("Scripting.Dictionary")
+        Set urunSirasi = New Collection
+        Set urunVarMi = CreateObject("Scripting.Dictionary")
+
+        Dim i As Long
+        For i = 1 To satisAdet
+            Dim gAdiS As String
+            gAdiS = GrupAdiBulTCFD(CStr(satislar(i, 4)), dEslesmeGrubu)
+            If Not dSatisUrunM.Exists(gAdiS) Then dSatisUrunM(gAdiS) = 0
+            dSatisUrunM(gAdiS) = dSatisUrunM(gAdiS) + CDbl(satislar(i, 5))
+            If Not urunVarMi.Exists(TurkceBuyukHarfTCFD(gAdiS)) Then
+                urunVarMi(TurkceBuyukHarfTCFD(gAdiS)) = True
+                urunSirasi.Add gAdiS
+            End If
+        Next i
+        For i = 1 To giderAdet
+            If dBeklenenEskiUrun.Exists(TurkceBuyukHarfTCFD(CStr(tumGiderler(i, 3)))) Then
+                Dim gAdiG As String
+                gAdiG = GrupAdiBulTCFD(CStr(tumGiderler(i, 4)), dEslesmeGrubu)
+                If Not dGelenUrunM.Exists(gAdiG) Then dGelenUrunM(gAdiG) = 0
+                dGelenUrunM(gAdiG) = dGelenUrunM(gAdiG) + CDbl(tumGiderler(i, 5))
+                If Not urunVarMi.Exists(TurkceBuyukHarfTCFD(gAdiG)) Then
+                    urunVarMi(TurkceBuyukHarfTCFD(gAdiG)) = True
+                    urunSirasi.Add gAdiG
+                End If
+            End If
+        Next i
+
+        Dim urun As Variant
+        For Each urun In urunSirasi
+            Dim urunAdi As String
+            urunAdi = CStr(urun)
+            Dim mS As Double, mG As Double, fark As Double
+            mS = 0: mG = 0
+            If dSatisUrunM.Exists(urunAdi) Then mS = dSatisUrunM(urunAdi)
+            If dGelenUrunM.Exists(urunAdi) Then mG = dGelenUrunM(urunAdi)
+            fark = mS - mG
+
+            wsHedef.Cells(satir, 1).Value = cariDizi(k)
+            wsHedef.Cells(satir, 2).Value = "ANA KAMPANYA"
+            wsHedef.Cells(satir, 3).Value = urunAdi
+            wsHedef.Cells(satir, 4).Value = mS
+            wsHedef.Cells(satir, 6).Value = cariDizi(k)
+            wsHedef.Cells(satir, 7).Value = "ATIK AKÜ"
+            wsHedef.Cells(satir, 8).Value = urunAdi
+            wsHedef.Cells(satir, 9).Value = mG
+            wsHedef.Cells(satir, 10).Value = fark
+            wsHedef.Range("D" & satir & ":D" & satir).NumberFormat = "#,##0"
+            wsHedef.Range("I" & satir & ":J" & satir).NumberFormat = "#,##0"
+            If fark > 0 Then
+                wsHedef.Cells(satir, 10).Font.Color = RGB(156, 0, 6)
+            ElseIf fark < 0 Then
+                wsHedef.Cells(satir, 10).Font.Color = RGB(0, 97, 0)
+            End If
+
+            genelSatisM = genelSatisM + mS
+            genelGelenM = genelGelenM + mG
+            genelFark = genelFark + fark
+
+            Dim uBuyuk As String
+            uBuyuk = TurkceBuyukHarfTCFD(urunAdi)
+            If Not urunGenelVarMi.Exists(uBuyuk) Then
+                urunGenelVarMi(uBuyuk) = True
+                urunGenelSirasi.Add urunAdi
+                dUrunGenelFark(uBuyuk) = 0
+            End If
+            dUrunGenelFark(uBuyuk) = dUrunGenelFark(uBuyuk) + fark
+
+            satir = satir + 1
+        Next urun
+    Next k
+
+    ' --- TOPLAM satırı ---
+    wsHedef.Cells(satir, 3).Value = "TOPLAM"
+    wsHedef.Cells(satir, 4).Value = genelSatisM
+    wsHedef.Cells(satir, 9).Value = genelGelenM
+    wsHedef.Cells(satir, 10).Value = genelFark
+    wsHedef.Range("A" & satir & ":J" & satir).Font.Bold = True
+    wsHedef.Range("D" & satir).NumberFormat = "#,##0"
+    wsHedef.Range("I" & satir & ":J" & satir).NumberFormat = "#,##0"
+    wsHedef.Range("A" & satir & ":J" & satir).Borders(xlEdgeTop).LineStyle = xlContinuous
+    satir = satir + 3
+
+    ' --- ÖZET mini tablosu: SADECE ürün bazında, tüm carilerin toplam farkı ---
+    wsHedef.Cells(satir, 2).Value = "ÖZET"
+    wsHedef.Cells(satir, 3).Value = "FARK"
+    wsHedef.Range("B" & satir & ":C" & satir).Font.Bold = True
+    wsHedef.Range("B" & satir & ":C" & satir).Interior.Color = RGB(230, 230, 230)
+    satir = satir + 1
+
+    Dim uv As Variant, ozelToplamFark As Double
+    ozelToplamFark = 0
+    For Each uv In urunGenelSirasi
+        wsHedef.Cells(satir, 2).Value = uv
+        wsHedef.Cells(satir, 3).Value = dUrunGenelFark(TurkceBuyukHarfTCFD(CStr(uv)))
+        wsHedef.Range("C" & satir).NumberFormat = "#,##0"
+        ozelToplamFark = ozelToplamFark + dUrunGenelFark(TurkceBuyukHarfTCFD(CStr(uv)))
+        satir = satir + 1
+    Next uv
+
+    wsHedef.Cells(satir, 2).Value = "TOPLAM FARK"
+    wsHedef.Cells(satir, 3).Value = ozelToplamFark
+    wsHedef.Range("B" & satir & ":C" & satir).Font.Bold = True
+    wsHedef.Range("C" & satir).NumberFormat = "#,##0"
+    wsHedef.Range("B" & satir & ":C" & satir).Borders(xlEdgeTop).LineStyle = xlContinuous
+    satir = satir + 3
+
+    wsHedef.Cells(satir, 2).Value = "FARK + OLURSA GELMEYEN"
+    wsHedef.Cells(satir, 2).Font.Color = RGB(156, 0, 6)
+    satir = satir + 1
+    wsHedef.Cells(satir, 2).Value = "FARK EKSİ OLURSA FAZLA GELEN"
+    wsHedef.Cells(satir, 2).Font.Color = RGB(0, 97, 0)
+
+    wsHedef.Columns("A:J").AutoFit
+    wsHedef.Range("A1").Select
+End Sub
+
+' =====================================================================================
+'  FİYAT UYUŞMAZLIĞI - V1
+'
+'  Ayarlar!X2 (1. ürünün sabit eski fiyatı) ve X3 (2. ürünün sabit eski fiyatı) ile,
+'  Giderler'deki (kayıtlı eski ürün) satırların GERÇEK Birim Fiyatı (Tutar/Miktar)
+'  karşılaştırılır. ±1 TL toleransın dışında kalan satırlar burada listelenir - yani
+'  "bu carinin eski ürün fiyatı beklenenden farklı çıkmış, kontrol et" demek.
+' =====================================================================================
+Private Sub FiyatUyusmazlikYaz(wsHedef As Worksheet, wsGiderler As Worksheet, _
+                                wsAyarlar As Worksheet, cariDizi() As String, n As Long)
+    ' --- Ayarlar!V:W'den beklenen eski ürün stok kodu listesini oku ---
+    Dim dBeklenenEskiUrun As Object
+    Set dBeklenenEskiUrun = CreateObject("Scripting.Dictionary")
+    Dim vSatir As Long
+    vSatir = 2
+    Do While Trim(wsAyarlar.Cells(vSatir, "V").Value) <> ""
+        dBeklenenEskiUrun(TurkceBuyukHarfTCFD(Trim(CStr(wsAyarlar.Cells(vSatir, "V").Value)))) = True
+        vSatir = vSatir + 1
+    Loop
+
+    ' --- Ayarlar!B2<->W2 ve B3<->W3 eşleşme haritası (diğer sayfalarla aynı) ---
+    Dim dEslesmeGrubu As Object
+    Set dEslesmeGrubu = CreateObject("Scripting.Dictionary")
+    Dim urun1SatisAdi As String, urun1EskiAdi As String, urun2SatisAdi As String, urun2EskiAdi As String
+    urun1SatisAdi = Trim(CStr(wsAyarlar.Range("B2").Value))
+    urun1EskiAdi = Trim(CStr(wsAyarlar.Range("W2").Value))
+    urun2SatisAdi = Trim(CStr(wsAyarlar.Range("B3").Value))
+    urun2EskiAdi = Trim(CStr(wsAyarlar.Range("W3").Value))
+    If urun1SatisAdi <> "" Then
+        dEslesmeGrubu(TurkceBuyukHarfTCFD(urun1SatisAdi)) = urun1SatisAdi
+        If urun1EskiAdi <> "" Then dEslesmeGrubu(TurkceBuyukHarfTCFD(urun1EskiAdi)) = urun1SatisAdi
+    End If
+    If urun2SatisAdi <> "" Then
+        dEslesmeGrubu(TurkceBuyukHarfTCFD(urun2SatisAdi)) = urun2SatisAdi
+        If urun2EskiAdi <> "" Then dEslesmeGrubu(TurkceBuyukHarfTCFD(urun2EskiAdi)) = urun2SatisAdi
+    End If
+
+    ' --- Ayarlar!X2 / X3 - beklenen sabit eski fiyat (ürün1 / ürün2) ---
+    Dim beklenenFiyat1 As Double, beklenenFiyat2 As Double
+    beklenenFiyat1 = SayiOkuTCFD(wsAyarlar.Range("X2").Value)
+    beklenenFiyat2 = SayiOkuTCFD(wsAyarlar.Range("X3").Value)
+
+    wsHedef.Range("A1").Value = "FİYAT UYUŞMAZLIĞI (Ayarlar!X2/X3 sabit eski fiyatı ile uymayan cariler)"
+    wsHedef.Range("A1").Font.Bold = True
+    wsHedef.Range("A1").Font.Size = 13
+
+    wsHedef.Range("A3:H3").Value = Array("Cari İsim", "Tarih", "Fiş/FaturaNo", "Ürün", "Miktar", _
+        "Tutar", "Gerçek Birim Fiyat", "Beklenen Fiyat")
+    wsHedef.Range("A3:H3").Font.Bold = True
+    wsHedef.Range("A3:H3").Interior.Color = RGB(230, 230, 230)
+    wsHedef.Range("I3").Value = "Fark"
+    wsHedef.Range("I3").Font.Bold = True
+    wsHedef.Range("I3").Interior.Color = RGB(230, 230, 230)
+
+    Dim satir As Long, k As Long, uyumsuzSayisi As Long
+    satir = 4
+    uyumsuzSayisi = 0
+
+    For k = 0 To n - 1
+        Dim tumGiderler As Variant, giderAdet As Long
+        giderAdet = 0
+        ReDim tumGiderler(1 To 2000, 1 To 6)
+        UrunSatirlariTopla wsGiderler, cariDizi(k), tumGiderler, giderAdet
+
+        Dim i As Long
+        For i = 1 To giderAdet
+            If dBeklenenEskiUrun.Exists(TurkceBuyukHarfTCFD(CStr(tumGiderler(i, 3)))) Then
+                Dim urunAdi As String, grup As String
+                urunAdi = CStr(tumGiderler(i, 4))
+                grup = GrupAdiBulTCFD(urunAdi, dEslesmeGrubu)
+
+                Dim beklenen As Double
+                beklenen = 0
+                If TurkceBuyukHarfTCFD(grup) = TurkceBuyukHarfTCFD(urun1SatisAdi) And urun1SatisAdi <> "" Then
+                    beklenen = beklenenFiyat1
+                ElseIf TurkceBuyukHarfTCFD(grup) = TurkceBuyukHarfTCFD(urun2SatisAdi) And urun2SatisAdi <> "" Then
+                    beklenen = beklenenFiyat2
+                End If
+
+                If beklenen > 0 Then
+                    Dim Miktar As Double, Tutar As Double, gercekFiyat As Double
+                    Miktar = CDbl(tumGiderler(i, 5))
+                    Tutar = CDbl(tumGiderler(i, 6))
+                    If Miktar <> 0 Then
+                        gercekFiyat = Tutar / Miktar
+                        If Abs(gercekFiyat - beklenen) > 1 Then
+                            wsHedef.Cells(satir, 1).Value = cariDizi(k)
+                            wsHedef.Cells(satir, 2).Value = tumGiderler(i, 1)
+                            wsHedef.Cells(satir, 2).NumberFormat = "m/d/yyyy"
+                            wsHedef.Cells(satir, 3).Value = tumGiderler(i, 2)
+                            wsHedef.Cells(satir, 4).Value = urunAdi
+                            wsHedef.Cells(satir, 5).Value = Miktar
+                            wsHedef.Cells(satir, 6).Value = Tutar
+                            wsHedef.Cells(satir, 7).Value = gercekFiyat
+                            wsHedef.Cells(satir, 8).Value = beklenen
+                            wsHedef.Cells(satir, 9).Value = gercekFiyat - beklenen
+                            wsHedef.Range("E" & satir).NumberFormat = "#,##0"
+                            wsHedef.Range("F" & satir & ":I" & satir).NumberFormat = "#,##0.00"
+                            wsHedef.Cells(satir, 9).Font.Color = RGB(200, 0, 0)
+                            wsHedef.Cells(satir, 9).Font.Bold = True
+                            uyumsuzSayisi = uyumsuzSayisi + 1
+                            satir = satir + 1
+                        End If
+                    End If
+                End If
+            End If
+        Next i
+    Next k
+
+    If uyumsuzSayisi = 0 Then
+        wsHedef.Cells(satir, 1).Value = "Tüm eski ürün fiyatları beklenenle uyumlu - uyuşmazlık bulunamadı."
+        wsHedef.Cells(satir, 1).Font.Italic = True
+        wsHedef.Cells(satir, 1).Font.Color = RGB(0, 97, 0)
+    End If
+
+    wsHedef.Columns("A:I").AutoFit
+    wsHedef.Range("A1").Select
+End Sub
+
+' =====================================================================================
+'  CARİ BAZLI TAM DETAY RAPORU - V1
+'
+'  TumCariTamDetayRaporla_V1 ile AYNI yapı (Kampanya, Giderler, Ara Satış, Prim Gelen
+'  blokları + Ana Ürün Satış/Gelen Eski Özeti + Top.Hakediş Primi/Fark) ama TEK BİR
+'  cari için - "Patron şu kişinin tüm haritası" dediğinde, tüm carileri taramadan,
+'  sadece o kişiyi sorup anında yeni bir kitaba çeker.
+' =====================================================================================
+Sub CariBazliTumDetayRaporla_V1()
+
+    Dim wsKamp As Worksheet, wsAra As Worksheet, wsGiderler As Worksheet, wsPrim As Worksheet, wsAyarlar As Worksheet
+    Dim wbYeni As Workbook, wsYeni As Worksheet
+    Dim makYuzde As Double, cariAdi As String
+
+    Set wsKamp = ThisWorkbook.Sheets("Kampanya")
+    Set wsAra = ThisWorkbook.Sheets("Ara_Satış")
+    Set wsGiderler = ThisWorkbook.Sheets("Giderler")
+    Set wsPrim = ThisWorkbook.Sheets("Prim")
+    Set wsAyarlar = ThisWorkbook.Sheets("Ayarlar")
+    makYuzde = wsAyarlar.Range("M2").Value
+
+    cariAdi = InputBox("Ustam, Cari İsmini yazın (kısmi yazabilirsin, tam ismi otomatik bulur):", "Cari Bazlı Tam Detay Raporu")
+    If Trim(cariAdi) = "" Then Exit Sub
+    cariAdi = Trim(cariAdi)
+
+    Application.ScreenUpdating = False
+
+    ' --- Yazılan kısmi metinden TAM ismi bul (CariSorgula_V12 ile aynı kısmi eşleşme
+    ' mantığı) - sonraki adımlarda TAM isimle çalışılır, böylece benzer isimli iki cari
+    ' birbirine karışmaz. ---
+    Dim tamIsimBulunanlar As Collection, tamIsimVarMi As Object
+    Set tamIsimBulunanlar = New Collection
+    Set tamIsimVarMi = CreateObject("Scripting.Dictionary")
+    Dim aramaBuyukCBT As String
+    aramaBuyukCBT = TurkceBuyukHarfTCFD(cariAdi)
+
+    Dim wsAramaCBT As Variant
+    For Each wsAramaCBT In Array(ThisWorkbook.Sheets("Kampanya"), ThisWorkbook.Sheets("Ara_Satış"), _
+                                  ThisWorkbook.Sheets("Giderler"), ThisWorkbook.Sheets("Prim"))
+        Dim sonSatirAramaCBT As Long, iAramaCBT As Long
+        sonSatirAramaCBT = wsAramaCBT.Cells(wsAramaCBT.Rows.Count, "A").End(xlUp).Row
+        For iAramaCBT = 2 To sonSatirAramaCBT
+            Dim satirCariAramaCBT As String
+            satirCariAramaCBT = Trim(CStr(wsAramaCBT.Cells(iAramaCBT, "A").Value))
+            If satirCariAramaCBT <> "" Then
+                If InStr(1, TurkceBuyukHarfTCFD(satirCariAramaCBT), aramaBuyukCBT, vbTextCompare) > 0 Then
+                    If Not tamIsimVarMi.Exists(TurkceBuyukHarfTCFD(satirCariAramaCBT)) Then
+                        tamIsimVarMi(TurkceBuyukHarfTCFD(satirCariAramaCBT)) = True
+                        tamIsimBulunanlar.Add satirCariAramaCBT
+                    End If
+                End If
+            End If
+        Next iAramaCBT
+    Next wsAramaCBT
+
+    If tamIsimBulunanlar.Count = 0 Then
+        Application.ScreenUpdating = True
+        MsgBox "Ustam, '" & cariAdi & "' ile eşleşen bir cari bulunamadı.", vbExclamation
+        Exit Sub
+    ElseIf tamIsimBulunanlar.Count > 1 Then
+        Dim listeCBT As String, itemCBT As Variant
+        listeCBT = ""
+        For Each itemCBT In tamIsimBulunanlar
+            listeCBT = listeCBT & "- " & itemCBT & vbCrLf
+        Next itemCBT
+        Application.ScreenUpdating = True
+        MsgBox "Ustam, '" & cariAdi & "' ile birden fazla cari eşleşti:" & vbCrLf & vbCrLf & listeCBT & vbCrLf & _
+               "Lütfen daha net bir isim parçası yazıp tekrar dene.", vbExclamation
+        Exit Sub
+    End If
+
+    cariAdi = tamIsimBulunanlar(1)   ' tek eşleşme bulundu - artık TAM isimle devam
+
+    ' --- Ayarlar!V:W beklenen eski ürün listesi ve B2<->W2 / B3<->W3 eşleşme haritası ---
+    Dim dBeklenenEskiUrunCBT As Object
+    Set dBeklenenEskiUrunCBT = CreateObject("Scripting.Dictionary")
+    Dim vSatirCBT As Long
+    vSatirCBT = 2
+    Do While Trim(wsAyarlar.Cells(vSatirCBT, "V").Value) <> ""
+        dBeklenenEskiUrunCBT(TurkceBuyukHarfTCFD(Trim(CStr(wsAyarlar.Cells(vSatirCBT, "V").Value)))) = True
+        vSatirCBT = vSatirCBT + 1
+    Loop
+
+    Dim dEslesmeGrubuCBT As Object
+    Set dEslesmeGrubuCBT = CreateObject("Scripting.Dictionary")
+    Dim uUrun1SatisAdi As String, uUrun1EskiAdi As String, uUrun2SatisAdi As String, uUrun2EskiAdi As String
+    uUrun1SatisAdi = Trim(CStr(wsAyarlar.Range("B2").Value))
+    uUrun1EskiAdi = Trim(CStr(wsAyarlar.Range("W2").Value))
+    uUrun2SatisAdi = Trim(CStr(wsAyarlar.Range("B3").Value))
+    uUrun2EskiAdi = Trim(CStr(wsAyarlar.Range("W3").Value))
+    If uUrun1SatisAdi <> "" Then
+        dEslesmeGrubuCBT(TurkceBuyukHarfTCFD(uUrun1SatisAdi)) = uUrun1SatisAdi
+        If uUrun1EskiAdi <> "" Then dEslesmeGrubuCBT(TurkceBuyukHarfTCFD(uUrun1EskiAdi)) = uUrun1SatisAdi
+    End If
+    If uUrun2SatisAdi <> "" Then
+        dEslesmeGrubuCBT(TurkceBuyukHarfTCFD(uUrun2SatisAdi)) = uUrun2SatisAdi
+        If uUrun2EskiAdi <> "" Then dEslesmeGrubuCBT(TurkceBuyukHarfTCFD(uUrun2EskiAdi)) = uUrun2SatisAdi
+    End If
+
+    Dim uBeklenenFiyat1 As Double, uBeklenenFiyat2 As Double
+    uBeklenenFiyat1 = SayiOkuTCFD(wsAyarlar.Range("X2").Value)
+    uBeklenenFiyat2 = SayiOkuTCFD(wsAyarlar.Range("X3").Value)
+
+    ' =========================== YENİ KİTABI HAZIRLA ===========================
+    Set wbYeni = Workbooks.Add
+    Set wsYeni = wbYeni.Sheets(1)
+    wsYeni.Name = "Cari_Tam_Detay"
+
+    Dim satir As Long
+    satir = 1
+
+    wsYeni.Cells(satir, 1).Value = cariAdi
+    wsYeni.Range("A" & satir & ":P" & satir).Font.Bold = True
+    wsYeni.Range("A" & satir & ":P" & satir).Font.Size = 13
+    wsYeni.Range("A" & satir & ":P" & satir).Interior.Color = RGB(230, 230, 230)
+    satir = satir + 2
+
+    Dim kampPrim As Double, kampTutar As Double, kampSatir As Long
+    Dim araPrim As Double, araTutar As Double, araSatir As Long
+    Dim gelenPrimDeger As Double, gelenTutarDeger As Double, gelenSatir As Long
+
+    FaturaBlokKopyalaTCFD wsYeni, satir, wsKamp, cariAdi, "KAMPANYA", 0, makYuzde, kampPrim, kampTutar, kampSatir
+    satir = satir + 2
+    Dim giderPrimGostermeCBT As Double, giderTutarCBT As Double, giderSatirCBT As Long
+    FaturaBlokKopyalaTCFD wsYeni, satir, wsGiderler, cariAdi, "GİDERLER (ATIK AKÜ İADESİ)", 3, makYuzde, giderPrimGostermeCBT, giderTutarCBT, giderSatirCBT
+    satir = satir + 2
+    FaturaBlokKopyalaTCFD wsYeni, satir, wsAra, cariAdi, "ARA SATIŞ", 1, makYuzde, araPrim, araTutar, araSatir
+    satir = satir + 2
+    Dim primBlokBaslangicCBT As Long
+    primBlokBaslangicCBT = satir
+    FaturaBlokKopyalaTCFD wsYeni, satir, wsPrim, cariAdi, "PRİM (GELEN)", 2, makYuzde, gelenPrimDeger, gelenTutarDeger, gelenSatir
+
+    ' --- Çapraz Kontrol ve Esnek Vurgulama ---
+    Dim kampanyaEslesti As Boolean, araSatisEslesti As Boolean
+    kampanyaEslesti = False
+    araSatisEslesti = False
+
+    If gelenSatir > 0 Then
+        Dim aramaSatiri As Long, gelenDeger As Double
+        For aramaSatiri = primBlokBaslangicCBT To gelenSatir
+            If aramaSatiri > 0 Then
+                gelenDeger = SayiOkuTCFD(wsYeni.Cells(aramaSatiri, "M").Value)
+                If gelenDeger > 0 Then
+                    Dim buSatirEslesti As Boolean
+                    buSatirEslesti = False
+                    If Abs(gelenDeger - kampPrim) <= 1 And kampPrim > 0 Then
+                        wsYeni.Cells(aramaSatiri, "M").Interior.Color = RGB(198, 239, 206)
+                        kampanyaEslesti = True
+                        buSatirEslesti = True
+                    End If
+                    If Abs(gelenDeger - araPrim) <= 1 And araPrim > 0 Then
+                        wsYeni.Cells(aramaSatiri, "M").Interior.Color = RGB(198, 239, 206)
+                        araSatisEslesti = True
+                        buSatirEslesti = True
+                    End If
+                    If Abs(gelenDeger - (kampPrim + araPrim)) <= 1 And (kampPrim + araPrim) > 0 Then
+                        wsYeni.Cells(aramaSatiri, "M").Interior.Color = RGB(198, 239, 206)
+                        kampanyaEslesti = True
+                        araSatisEslesti = True
+                        buSatirEslesti = True
+                    End If
+                    If Not buSatirEslesti Then
+                        wsYeni.Cells(aramaSatiri, "M").Interior.Color = RGB(255, 230, 153)
+                        wsYeni.Cells(aramaSatiri, "M").Font.Color = RGB(156, 87, 0)
+                    End If
+                End If
+            End If
+        Next aramaSatiri
+
+        If kampanyaEslesti And kampSatir > 0 Then
+            wsYeni.Cells(kampSatir, "P").Interior.Color = RGB(198, 239, 206)
+        ElseIf kampSatir > 0 And kampPrim > 0 Then
+            wsYeni.Cells(kampSatir, "P").Interior.Color = RGB(255, 199, 206)
+            wsYeni.Cells(kampSatir, "P").Font.Color = RGB(156, 0, 6)
+        End If
+
+        If araSatisEslesti And araSatir > 0 Then
+            wsYeni.Cells(araSatir, "O").Interior.Color = RGB(198, 239, 206)
+        ElseIf araSatir > 0 And araPrim > 0 Then
+            wsYeni.Cells(araSatir, "O").Interior.Color = RGB(255, 199, 206)
+            wsYeni.Cells(araSatir, "O").Font.Color = RGB(156, 0, 6)
+        End If
+    End If
+
+    ' --- ANA ÜRÜN SATIŞ / ATIK AKÜ ÖZETİ ---
+    satir = satir + 1
+    wsYeni.Cells(satir, 1).Value = "ANA ÜRÜN SATIŞ / ATIK AKÜ ÖZETİ"
+    wsYeni.Cells(satir, 1).Font.Bold = True
+    wsYeni.Cells(satir, 1).Font.Italic = True
+    satir = satir + 1
+    wsYeni.Range("A" & satir & ":F" & satir).Value = Array("Ürün", "Satış Miktarı", "Gelen Eski Miktarı", "Fark", "Gelen (Fatura) Fiyatı", "Beklenen Fiyatı")
+    wsYeni.Range("A" & satir & ":F" & satir).Font.Bold = True
+    satir = satir + 1
+
+    Dim satislarCBT As Variant, satisAdetCBT As Long
+    satisAdetCBT = 0
+    ReDim satislarCBT(1 To 2000, 1 To 6)
+    UrunSatirlariTopla wsKamp, cariAdi, satislarCBT, satisAdetCBT
+
+    Dim tumGiderlerCBT As Variant, giderAdetCBT As Long
+    giderAdetCBT = 0
+    ReDim tumGiderlerCBT(1 To 2000, 1 To 6)
+    UrunSatirlariTopla wsGiderler, cariAdi, tumGiderlerCBT, giderAdetCBT
+
+    Dim dSatisCBT As Object, dGelenCBT As Object, dGelenTutarCBT As Object
+    Dim urunSirasiCBT As Collection, urunVarMiCBT As Object
+    Set dSatisCBT = CreateObject("Scripting.Dictionary")
+    Set dGelenCBT = CreateObject("Scripting.Dictionary")
+    Set dGelenTutarCBT = CreateObject("Scripting.Dictionary")
+    Set urunSirasiCBT = New Collection
+    Set urunVarMiCBT = CreateObject("Scripting.Dictionary")
+
+    Dim iCBT As Long
+    For iCBT = 1 To satisAdetCBT
+        Dim gAdiCBT As String
+        gAdiCBT = GrupAdiBulTCFD(CStr(satislarCBT(iCBT, 4)), dEslesmeGrubuCBT)
+        If Not dSatisCBT.Exists(gAdiCBT) Then dSatisCBT(gAdiCBT) = 0
+        dSatisCBT(gAdiCBT) = dSatisCBT(gAdiCBT) + CDbl(satislarCBT(iCBT, 5))
+        If Not urunVarMiCBT.Exists(TurkceBuyukHarfTCFD(gAdiCBT)) Then
+            urunVarMiCBT(TurkceBuyukHarfTCFD(gAdiCBT)) = True
+            urunSirasiCBT.Add gAdiCBT
+        End If
+    Next iCBT
+    For iCBT = 1 To giderAdetCBT
+        If dBeklenenEskiUrunCBT.Exists(TurkceBuyukHarfTCFD(CStr(tumGiderlerCBT(iCBT, 3)))) Then
+            Dim gAdiGCBT As String
+            gAdiGCBT = GrupAdiBulTCFD(CStr(tumGiderlerCBT(iCBT, 4)), dEslesmeGrubuCBT)
+            If Not dGelenCBT.Exists(gAdiGCBT) Then dGelenCBT(gAdiGCBT) = 0
+            dGelenCBT(gAdiGCBT) = dGelenCBT(gAdiGCBT) + CDbl(tumGiderlerCBT(iCBT, 5))
+            If Not dGelenTutarCBT.Exists(gAdiGCBT) Then dGelenTutarCBT(gAdiGCBT) = 0
+            dGelenTutarCBT(gAdiGCBT) = dGelenTutarCBT(gAdiGCBT) + CDbl(tumGiderlerCBT(iCBT, 6))
+            If Not urunVarMiCBT.Exists(TurkceBuyukHarfTCFD(gAdiGCBT)) Then
+                urunVarMiCBT(TurkceBuyukHarfTCFD(gAdiGCBT)) = True
+                urunSirasiCBT.Add gAdiGCBT
+            End If
+        End If
+    Next iCBT
+
+    If urunSirasiCBT.Count = 0 Then
+        wsYeni.Cells(satir, 1).Value = "(kayıt yok)"
+        wsYeni.Cells(satir, 1).Font.Italic = True
+        wsYeni.Cells(satir, 1).Font.Color = RGB(150, 150, 150)
+        satir = satir + 1
+    Else
+        Dim urunCBT As Variant, toplamSatisCBT As Double, toplamGelenCBT As Double
+        toplamSatisCBT = 0: toplamGelenCBT = 0
+        For Each urunCBT In urunSirasiCBT
+            Dim mSCBT As Double, mGCBT As Double, tGCBT As Double
+            mSCBT = 0: mGCBT = 0: tGCBT = 0
+            If dSatisCBT.Exists(CStr(urunCBT)) Then mSCBT = dSatisCBT(CStr(urunCBT))
+            If dGelenCBT.Exists(CStr(urunCBT)) Then mGCBT = dGelenCBT(CStr(urunCBT))
+            If dGelenTutarCBT.Exists(CStr(urunCBT)) Then tGCBT = dGelenTutarCBT(CStr(urunCBT))
+            wsYeni.Cells(satir, 1).Value = urunCBT
+            wsYeni.Cells(satir, 2).Value = mSCBT
+            wsYeni.Cells(satir, 3).Value = mGCBT
+            wsYeni.Cells(satir, 4).Value = mSCBT - mGCBT
+            wsYeni.Range("B" & satir & ":D" & satir).NumberFormat = "#,##0"
+            If mGCBT <> 0 Then
+                wsYeni.Cells(satir, 5).Value = tGCBT / mGCBT
+                wsYeni.Range("E" & satir).NumberFormat = "#,##0.00"
+            End If
+            If TurkceBuyukHarfTCFD(CStr(urunCBT)) = TurkceBuyukHarfTCFD(uUrun1SatisAdi) And uUrun1SatisAdi <> "" Then
+                wsYeni.Cells(satir, 6).Value = uBeklenenFiyat1
+                wsYeni.Range("F" & satir).NumberFormat = "#,##0.00"
+            ElseIf TurkceBuyukHarfTCFD(CStr(urunCBT)) = TurkceBuyukHarfTCFD(uUrun2SatisAdi) And uUrun2SatisAdi <> "" Then
+                wsYeni.Cells(satir, 6).Value = uBeklenenFiyat2
+                wsYeni.Range("F" & satir).NumberFormat = "#,##0.00"
+            End If
+            If mSCBT - mGCBT > 0 Then
+                wsYeni.Cells(satir, 4).Font.Color = RGB(156, 0, 6)
+            ElseIf mSCBT - mGCBT < 0 Then
+                wsYeni.Cells(satir, 4).Font.Color = RGB(0, 97, 0)
+            End If
+            toplamSatisCBT = toplamSatisCBT + mSCBT
+            toplamGelenCBT = toplamGelenCBT + mGCBT
+            satir = satir + 1
+        Next urunCBT
+        wsYeni.Cells(satir, 1).Value = "TOPLAM"
+        wsYeni.Cells(satir, 2).Value = toplamSatisCBT
+        wsYeni.Cells(satir, 3).Value = toplamGelenCBT
+        wsYeni.Cells(satir, 4).Value = toplamSatisCBT - toplamGelenCBT
+        wsYeni.Range("A" & satir & ":D" & satir).Font.Bold = True
+        wsYeni.Range("B" & satir & ":D" & satir).NumberFormat = "#,##0"
+        satir = satir + 1
+    End If
+
+    ' --- Top.Hakediş Primi / Fark ---
+    If kampSatir > 0 Or araSatir > 0 Or gelenSatir > 0 Then
+        Dim topHakedisPrimiCBT As Double, farkDegerCBT As Double, farkMetniCBT As String
+        topHakedisPrimiCBT = kampPrim + araPrim
+        farkDegerCBT = gelenTutarDeger - topHakedisPrimiCBT
+
+        satir = satir + 1
+        wsYeni.Cells(satir, 3).Value = "Top.Hakediş Primi"
+        wsYeni.Cells(satir, 5).Value = topHakedisPrimiCBT
+        wsYeni.Cells(satir, 6).Value = "Fark"
+        wsYeni.Cells(satir, 13).Value = farkDegerCBT
+
+        If Abs(farkDegerCBT) <= 1 Then
+            farkMetniCBT = "Doğru Kesilmiş"
+            wsYeni.Range("C" & satir).Interior.Color = RGB(198, 239, 206)
+            wsYeni.Range("E" & satir).Interior.Color = RGB(198, 239, 206)
+            wsYeni.Range("F" & satir).Interior.Color = RGB(198, 239, 206)
+            wsYeni.Range("M" & satir & ":N" & satir).Interior.Color = RGB(198, 239, 206)
+        ElseIf farkDegerCBT < 0 Then
+            farkMetniCBT = "Eksik Kesmiş"
+            wsYeni.Cells(satir, 13).Font.Color = RGB(156, 0, 6)
+            wsYeni.Cells(satir, 14).Font.Color = RGB(156, 0, 6)
+        Else
+            farkMetniCBT = "Fazla Kesmiş"
+            wsYeni.Cells(satir, 13).Font.Color = RGB(0, 97, 0)
+            wsYeni.Cells(satir, 14).Font.Color = RGB(0, 97, 0)
+        End If
+        wsYeni.Cells(satir, 14).Value = farkMetniCBT
+
+        wsYeni.Range("C" & satir & ":F" & satir).Font.Bold = True
+        wsYeni.Range("M" & satir & ":N" & satir).Font.Bold = True
+        wsYeni.Range("E" & satir).NumberFormat = "#,##0.00"
+        wsYeni.Range("M" & satir).NumberFormat = "#,##0.00"
+    End If
+
+    wsYeni.Columns("A:P").AutoFit
+    wsYeni.Columns("A").ColumnWidth = 41
+    wsYeni.Columns("D").EntireColumn.Hidden = True
+    wsYeni.Columns("G:L").EntireColumn.Hidden = True
+    wsYeni.Range("A1").Select
+
+    Application.ScreenUpdating = True
+
+    MsgBox "Ustam, " & cariAdi & " için tam detay raporu hazır!" & vbCrLf & _
+           "Kitabı kaydetmeyi unutma (henüz kaydedilmedi).", vbInformation, "Cari Bazlı Tam Detay Raporu"
+End Sub
+
+
