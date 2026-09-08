@@ -186,9 +186,9 @@ Sub TumCariTumDetayRaporla_V1()
             End If
         End If
 
-        ' --- ANA ÜRÜN SATIŞ / ESKİ HURDA AKÜ ÖZETİ (Top.Hakediş'ten hemen önce) ---
+        ' --- ANA ÜRÜN SATIŞ / ESKİ HURDA ÖZETİ (Top.Hakediş'ten hemen önce) ---
         satir = satir + 1
-        wsYeni.Cells(satir, 1).Value = "ANA ÜRÜN SATIŞ / ESKİ HURDA AKÜ ÖZETİ"
+        wsYeni.Cells(satir, 1).Value = "ANA ÜRÜN SATIŞ / ESKİ HURDA  ÖZETİ"
         wsYeni.Cells(satir, 1).Font.Bold = True
         wsYeni.Cells(satir, 1).Font.Italic = True
         satir = satir + 1
@@ -560,8 +560,8 @@ End Function
 ' =====================================================================================
 '  SATIŞ / İADE ÖZETİ - Cari bazında, ÜÇ AYRI BLOK:
 '    1) SATIŞ (Kampanya)
-'    2) ESKİ HURDA AKÜ - KAYITLI (Giderler'de, Ayarlar!V:W listesindeki stok koduyla eşleşen)
-'    3) ESKİ HURDA AKÜ - UYMAYAN (Giderler'de, o listede OLMAYAN - beklenmedik/farklı giriş)
+'    2) ESKİ HURDA  - KAYITLI (Giderler'de, Ayarlar!V:W listesindeki stok koduyla eşleşen)
+'    3) ESKİ HURDA  - UYMAYAN (Giderler'de, o listede OLMAYAN - beklenmedik/farklı giriş)
 '
 '  Ayarlar sayfasında V1/W1 başlık, V2'den itibaren aşağı doğru: V=Stok Kodu, W=Stok Adı
 '  - kaç satır olursa olsun (boş satıra kadar) okunur, "beklenen eski ürün" listesidir.
@@ -631,7 +631,7 @@ Private Sub SatisIadeOzetYaz(wsHedef As Worksheet, wsKamp As Worksheet, wsGiderl
         Next g
 
         satir = SatisKayitliKarsilastirYaz(wsHedef, satir, satislar, satisAdet, kayitli, kayitliAdet, wsAyarlar)
-        satir = BlokYazSIO(wsHedef, satir, "ESKİ HURDA AKÜ - UYMAYAN (kontrol et)", uymayan, uymayanAdet, RGB(255, 199, 206))
+        satir = BlokYazSIO(wsHedef, satir, "ESKİ HURDA  - UYMAYAN (kontrol et)", uymayan, uymayanAdet, RGB(255, 199, 206))
 
         satir = satir + 1   ' cariler arası boşluk
     Next k
@@ -658,7 +658,7 @@ Private Function SatisKayitliKarsilastirYaz(wsHedef As Worksheet, ByVal satir As
                                              kayitli As Variant, kayitliAdet As Long, _
                                              wsAyarlar As Worksheet) As Long
     wsHedef.Cells(satir, 1).Value = "SATIŞ (Kampanya)"
-    wsHedef.Cells(satir, 8).Value = "ESKİ HURDA AKÜ - KAYITLI"
+    wsHedef.Cells(satir, 8).Value = "ESKİ HURDA  - KAYITLI"
     wsHedef.Range("A" & satir & ":F" & satir).Font.Bold = True
     wsHedef.Range("H" & satir & ":N" & satir).Font.Bold = True
     wsHedef.Range("A" & satir & ":F" & satir).Interior.Color = RGB(222, 235, 247)
@@ -1033,7 +1033,7 @@ Private Sub OzetHurdaYaz(wsHedef As Worksheet, wsKamp As Worksheet, wsGiderler A
             wsHedef.Cells(satir, 3).Value = urunAdi
             wsHedef.Cells(satir, 4).Value = mS
             wsHedef.Cells(satir, 6).Value = cariDizi(k)
-            wsHedef.Cells(satir, 7).Value = "ESKİ HURDA AKÜ"
+            wsHedef.Cells(satir, 7).Value = "ESKİ HURDA "
             wsHedef.Cells(satir, 8).Value = urunAdi
             wsHedef.Cells(satir, 9).Value = mG
             wsHedef.Cells(satir, 10).Value = fark
@@ -1350,7 +1350,7 @@ Sub CariBazliTumDetayRaporla_V1()
     FaturaBlokKopyalaTCFD wsYeni, satir, wsKamp, cariAdi, "KAMPANYA", 0, makYuzde, kampPrim, kampTutar, kampSatir
     satir = satir + 2
     Dim giderPrimGostermeCBT As Double, giderTutarCBT As Double, giderSatirCBT As Long
-    FaturaBlokKopyalaTCFD wsYeni, satir, wsGiderler, cariAdi, "GİDERLER (ESKİ HURDA AKÜ İADESİ)", 3, makYuzde, giderPrimGostermeCBT, giderTutarCBT, giderSatirCBT
+    FaturaBlokKopyalaTCFD wsYeni, satir, wsGiderler, cariAdi, "GİDERLER (ESKİ HURDA  İADESİ)", 3, makYuzde, giderPrimGostermeCBT, giderTutarCBT, giderSatirCBT
     satir = satir + 2
     FaturaBlokKopyalaTCFD wsYeni, satir, wsAra, cariAdi, "ARA SATIŞ", 1, makYuzde, araPrim, araTutar, araSatir
     satir = satir + 2
@@ -1410,9 +1410,9 @@ Sub CariBazliTumDetayRaporla_V1()
         End If
     End If
 
-    ' --- ANA ÜRÜN SATIŞ / ESKİ HURDA AKÜ ÖZETİ ---
+    ' --- ANA ÜRÜN SATIŞ / ESKİ HURDA  ÖZETİ ---
     satir = satir + 1
-    wsYeni.Cells(satir, 1).Value = "ANA ÜRÜN SATIŞ / ESKİ HURDA AKÜ ÖZETİ"
+    wsYeni.Cells(satir, 1).Value = "ANA ÜRÜN SATIŞ / ESKİ HURDA  ÖZETİ"
     wsYeni.Cells(satir, 1).Font.Bold = True
     wsYeni.Cells(satir, 1).Font.Italic = True
     satir = satir + 1
