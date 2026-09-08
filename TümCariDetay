@@ -452,7 +452,7 @@ Private Function FaturaBlokKopyalaTCFD(wsYeni As Worksheet, ByRef satir As Long,
         Case 0
             basliklar = Array("Cari İsim", "Tarih", "Fiş/FaturaNo", "Stok Kodu", "Stok Adı", "Miktar", _
                 "Brüt Fiyat", "Net Fiyat", "Brüt Satış Tutarı", "İskonto Tutarı", "İskonto Döviz Tutarı", _
-                "KDV Tutarı", "Tutar", "Proje Kodu", "Destek Prm. Fiyatı", "Destek Prm. Primi")
+                "KDV Tutarı", "Tutar", "Proje Kodu", "teşvik Prm. Fiyatı", "teşvik Prm. Primi")
         Case 1
             basliklar = Array("Cari İsim", "Tarih", "Fiş/FaturaNo", "Stok Kodu", "Stok Adı", "Miktar", _
                 "Brüt Fiyat", "Net Fiyat", "Brüt Satış Tutarı", "İskonto Tutarı", "İskonto Döviz Tutarı", _
