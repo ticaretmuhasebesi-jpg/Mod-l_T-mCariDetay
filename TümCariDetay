@@ -113,7 +113,7 @@ Sub TumCariTumDetayRaporla_V1()
         FaturaBlokKopyalaTCFD wsYeni, satir, wsKamp, cariDizi(k), "KAMPANYA", 0, makYuzde, kampPrim, kampTutar, kampSatir
         satir = satir + 2
         Dim giderPrimGosterme As Double, giderTutar As Double, giderSatir As Long
-        FaturaBlokKopyalaTCFD wsYeni, satir, wsGiderler, cariDizi(k), "GİDERLER (ESKİ HURDA AKÜ İADESİ)", 3, makYuzde, giderPrimGosterme, giderTutar, giderSatir
+        FaturaBlokKopyalaTCFD wsYeni, satir, wsGiderler, cariDizi(k), "GİDERLER (ESKİ HURDA İADESİ)", 3, makYuzde, giderPrimGosterme, giderTutar, giderSatir
         satir = satir + 2
         FaturaBlokKopyalaTCFD wsYeni, satir, wsAra, cariDizi(k), "ARA SATIŞ", 1, makYuzde, araPrim, araTutar, araSatir
         satir = satir + 2
