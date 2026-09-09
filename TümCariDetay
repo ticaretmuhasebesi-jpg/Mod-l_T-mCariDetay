@@ -1,3 +1,4 @@
+
 'Attribute VB_Name = "Module_TumCariTamDetay"
 Option Explicit
 
@@ -373,9 +374,6 @@ Sub TumCariTumDetayRaporla_V1()
 End Sub
 
 
-
-
-
 ' =====================================================================================
 '  YARDIMCILAR (Aynı yapıda korundu)
 ' =====================================================================================
@@ -452,7 +450,7 @@ Private Function FaturaBlokKopyalaTCFD(wsYeni As Worksheet, ByRef satir As Long,
         Case 0
             basliklar = Array("Cari İsim", "Tarih", "Fiş/FaturaNo", "Stok Kodu", "Stok Adı", "Miktar", _
                 "Brüt Fiyat", "Net Fiyat", "Brüt Satış Tutarı", "İskonto Tutarı", "İskonto Döviz Tutarı", _
-                "KDV Tutarı", "Tutar", "Proje Kodu", "Teşvik Prm. Fiyatı", "Teşvik Prm. Primi")
+                "KDV Tutarı", "Tutar", "Proje Kodu", "TeşvikPrm. Fiyatı", "TeşvikPrm. Primi")
         Case 1
             basliklar = Array("Cari İsim", "Tarih", "Fiş/FaturaNo", "Stok Kodu", "Stok Adı", "Miktar", _
                 "Brüt Fiyat", "Net Fiyat", "Brüt Satış Tutarı", "İskonto Tutarı", "İskonto Döviz Tutarı", _
